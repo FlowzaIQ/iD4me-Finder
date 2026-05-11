@@ -1,0 +1,329 @@
+/* 🛠️ Premium Dark Sidebar Styling */
+:root {
+    --sidebar-width: 260px;
+    --sidebar-bg: #0B1120; /* Deep, sleek slate blue/black */
+    --primary-blue: #3B82F6;
+    --text-muted: #94A3B8;
+    --text-light: #F8FAFC;
+}
+
+#main-toolbar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: var(--sidebar-width);
+    height: 100vh;
+    background: var(--sidebar-bg);
+    color: var(--text-light);
+    padding: 24px 16px;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    z-index: 1000;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    border-right: 1px solid #1E293B; /* Subtle border separating it from the app */
+}
+
+/* 🌀 Modern App Icon */
+#toolbar-logo {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    height: 44px;
+    background: var(--primary-blue);
+    border-radius: 10px; /* Modern rounded square */
+    margin-bottom: 32px;
+    color: white;
+    box-shadow: 0 4px 12px rgba(59, 130, 246, 0.3); /* Soft blue glow */
+}
+
+/* 🔑 Main Menu Item */
+#toolbar-login-section {
+    display: flex;
+    align-items: center;
+    padding: 12px 14px;
+    background: rgba(255, 255, 255, 0.05); /* Slightly highlighted to show it's active */
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+#toolbar-login-section:hover {
+    background: rgba(255, 255, 255, 0.1);
+    transform: translateY(-1px);
+}
+
+#toolbar-login-icon, #toolbar-sign-out-icon {
+    display: flex;
+    align-items: center;
+    margin-right: 14px;
+    color: var(--text-muted);
+    transition: color 0.2s;
+}
+
+/* Make the icon turn blue when you hover over the button */
+#toolbar-login-section:hover #toolbar-login-icon {
+    color: var(--primary-blue);
+}
+
+#toolbar-login-label {
+    flex-grow: 1;
+    font-size: 14px;
+    font-weight: 500;
+}
+
+#toolbar-login-chevron {
+    display: flex;
+    align-items: center;
+    color: var(--text-muted);
+}
+
+/* Sign Out entry at the very bottom */
+#toolbar-sign-out {
+    margin-top: auto;
+    display: flex;
+    align-items: center;
+    padding: 12px 14px;
+    color: var(--text-muted);
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 500;
+    transition: all 0.2s ease;
+    border-radius: 8px;
+}
+
+#toolbar-sign-out:hover {
+    color: var(--text-light);
+    background: rgba(255, 255, 255, 0.05);
+}
+
+/* Turn the exit door red when hovered */
+#toolbar-sign-out:hover #toolbar-sign-out-icon {
+    color: #ef4444; 
+}
+
+/* Ensure the main app is pushed to the right of the sidebar */
+body {
+    padding-left: var(--sidebar-width);
+}
+
+/* =========================================
+   📐 SIDEBAR COLLAPSE & DASHBOARD SPACING
+========================================= */
+/* Add breathing room between the sidebar and the main dashboard */
+body {
+    padding: 30px; 
+    padding-left: calc(var(--sidebar-width) + 40px); /* Pushes dashboard away from the sidebar */
+    transition: padding-left 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    background-color: #F3F4F6;
+}
+
+/* When the sidebar shrinks, the dashboard expands smoothly */
+body.sidebar-collapsed {
+    padding-left: calc(80px + 40px);
+}
+
+#main-toolbar {
+    transition: width 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    overflow: hidden; /* Hides text cleanly when shrinking */
+}
+
+/* The Collapsed State */
+#main-toolbar.collapsed {
+    width: 80px;
+    padding: 24px 10px;
+}
+
+#main-toolbar.collapsed #toolbar-login-label,
+#main-toolbar.collapsed #toolbar-login-chevron,
+#main-toolbar.collapsed #toolbar-crm-label,
+#main-toolbar.collapsed #toolbar-crm-chevron,
+#main-toolbar.collapsed #toolbar-settings-label,
+#main-toolbar.collapsed #toolbar-settings-chevron,
+#main-toolbar.collapsed #toolbar-help-label,
+#main-toolbar.collapsed #toolbar-sign-out-label {
+    display: none; /* Hide text */
+}
+
+#main-toolbar.collapsed #toolbar-login-section,
+#main-toolbar.collapsed #toolbar-crm-section,
+#main-toolbar.collapsed #toolbar-settings-section,
+#main-toolbar.collapsed #toolbar-help-section,
+#main-toolbar.collapsed #toolbar-sign-out {
+    justify-content: center; /* Center the icons */
+    padding: 12px 0;
+}
+
+#main-toolbar.collapsed #toolbar-login-icon,
+#main-toolbar.collapsed #toolbar-crm-icon,
+#main-toolbar.collapsed #toolbar-settings-icon,
+#main-toolbar.collapsed #toolbar-help-icon,
+#main-toolbar.collapsed #toolbar-sign-out-icon {
+    margin-right: 0;
+}
+
+/* Make the logo act as a clickable menu toggle button */
+#toolbar-logo {
+    cursor: pointer;
+    transition: transform 0.2s, box-shadow 0.2s;
+}
+#toolbar-logo:hover {
+    transform: scale(1.05);
+    box-shadow: 0 6px 16px rgba(59, 130, 246, 0.4);
+}
+#toolbar-logo:active {
+    transform: scale(0.95);
+}
+
+/* =========================================
+   🔒 PREMIUM LOGIN MODAL STYLING
+========================================= */
+#login-modal-content {
+    background: white;
+    padding: 32px;
+    border-radius: 12px;
+    width: 320px;
+    /* The crisp blue outline and soft glow you requested */
+    border: 2px solid var(--primary-blue, #3B82F6);
+    box-shadow: 0 15px 35px rgba(0, 0, 0, 0.2), 0 0 20px rgba(59, 130, 246, 0.15);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    transform: translateY(-20px);
+    animation: modalSlideIn 0.3s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+
+@keyframes modalSlideIn {
+    to { transform: translateY(0); }
+}
+
+.modal-input {
+    width: 100%;
+    padding: 12px 14px;
+    margin-bottom: 16px;
+    border: 1px solid #D1D5DB;
+    border-radius: 6px;
+    box-sizing: border-box;
+    font-size: 14px;
+    transition: border-color 0.2s, box-shadow 0.2s;
+    outline: none;
+}
+
+.modal-input:focus {
+    border-color: var(--primary-blue, #3B82F6);
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+}
+
+/* =========================================
+   📈 PREMIUM DASHBOARD OVERVIEW WIDGET
+========================================= */
+/* A cohesive card that houses all stats */
+#dashboard-overview-card {
+    background: white;
+    padding: 30px;
+    border-radius: 12px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    border: 1px solid rgba(229, 231, 235, 0.5); /* Subtle inner border */
+    margin-bottom: 30px;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    display: flex;
+    flex-direction: column;
+}
+
+/* Redesigned Metrics List - Smaller and Cohesive */
+#dashboard-metrics-list {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    margin-bottom: 24px;
+}
+
+.metric-list-item {
+    display: flex;
+    align-items: center;
+    padding: 12px 16px;
+    background: #F8FAFC;
+    border-radius: 8px;
+    border: 1px solid #E2E8F0;
+    transition: all 0.2s;
+}
+
+/* Give the number its own distinct area */
+.metric-list-number-wrapper {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 60px;
+    height: 40px;
+    padding: 0 10px;
+    background: #E0E7FF;
+    border-radius: 6px;
+    font-size: 20px;
+    font-weight: 700;
+    color: var(--primary, #2563eb);
+    margin-right: 18px;
+    white-space: nowrap;
+    flex: 0 0 auto;
+    box-sizing: border-box;
+}
+
+/* Vector (SVG) icons for metrics turn colors when cohesive */
+.metric-list-icon {
+    display: flex;
+    align-items: center;
+    margin-right: 14px;
+    color: var(--text-muted, #94a3b8);
+}
+
+.metric-list-label {
+    flex-grow: 1;
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--text-muted, #9ca3af);
+}
+
+/* Color codes for specific metric numbers */
+#val-found-wrapper { background: #D1FAE5; color: #065F46; } /* Found = Green */
+#val-found-wrapper .metric-list-number-wrapper { background: #D1FAE5; color: #065F46; }
+
+#val-missing-wrapper { background: #FEE2E2; color: #991B1B; } /* Missing = Red */
+#val-missing-wrapper .metric-list-number-wrapper { background: #FEE2E2; color: #991B1B; }
+
+/* 🎬 Refined, Professional Status Box */
+#scrolling-status-box {
+    margin-top: auto;
+    background: #f8fafc;
+    border: 1px solid #bfdbfe;
+    border-radius: 8px;
+    padding: 16px;
+    color: #1e3a8a;
+    font-weight: 500;
+    font-size: 15px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+/* Premium Vector loading spinner */
+.loading-vector-spinner {
+    display: inline-block;
+    width: 18px;
+    height: 18px;
+    border: 3px solid rgba(59, 130, 246, 0.2);
+    border-radius: 50%;
+    border-top-color: #3B82F6;
+    animation: spin 1s linear infinite;
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* A professional disabled state for the toggle button */
+#toggle-homeowners-btn:disabled {
+    background: #94a3b8;
+    border-color: #94a3b8;
+    color: rgba(255, 255, 255, 0.7);
+    cursor: not-allowed;
+    opacity: 0.7;
+    box-shadow: none;
+    transform: none; /* No hover lift */
+}

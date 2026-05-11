@@ -1,0 +1,7 @@
+node_modules/
+release/
+output/
+*.log
+.env
+*.checkpoint*.json
+secrets.js
