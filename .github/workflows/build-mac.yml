@@ -23,7 +23,8 @@ jobs:
           PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
 
       - name: Create secrets file
-        run: echo "module.exports = { GOOGLE_CLIENT_ID: '${{ secrets.GOOGLE_CLIENT_ID }}', GOOGLE_CLIENT_SECRET: '${{ secrets.GOOGLE_CLIENT_SECRET }}' };" > secrets.js
+        run: |
+          echo "module.exports = { GOOGLE_CLIENT_ID: '${{ secrets.GOOGLE_CLIENT_ID }}', GOOGLE_CLIENT_SECRET: '${{ secrets.GOOGLE_CLIENT_SECRET }}' };" > secrets.js
 
       - name: Build Mac
         run: npm run build:mac -- --publish never
