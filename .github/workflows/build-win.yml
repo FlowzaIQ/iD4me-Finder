@@ -22,6 +22,10 @@ jobs:
         env:
           PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
 
+      - name: Create secrets file
+        run: |
+          "module.exports = { GOOGLE_CLIENT_ID: '${{ secrets.GOOGLE_CLIENT_ID }}', GOOGLE_CLIENT_SECRET: '${{ secrets.GOOGLE_CLIENT_SECRET }}' };" | Out-File -FilePath secrets.js -Encoding utf8
+
       - name: Build Windows
         run: npm run build:win -- --publish never
 
