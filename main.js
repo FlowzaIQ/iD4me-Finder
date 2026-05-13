@@ -612,6 +612,89 @@ function parsePriceFinderCSV(rows) {
   return result;
 }
 
+function parseOwnershipSearchCSV(rows) {
+  const header = rows[0].map(h => h.toLowerCase().trim());
+  const col = name => header.indexOf(name);
+
+  const idxStreet   = col("street");
+  const idxLocality = col("locality");
+  const idxPostcode = col("postcode");
+  const idxDate     = col("last sale date");
+  const idxOwner    = col("current owners");
+  const idxGovNum   = col("government number");
+
+  const addressMap = new Map();
+
+  for (let i = 1; i < rows.length; i++) {
+    const r = rows[i];
+    const address  = expandStreetSuffix((r[idxStreet]   || "").trim().toUpperCase());
+    const suburb   = (r[idxLocality] || "").trim();
+    const govNum   = (r[idxGovNum]   || "").trim();
+    const state    = (govNum.match(/^([A-Za-z]+)/) || [])[1]?.toUpperCase() || "";
+    const postcode = (r[idxPostcode] || "").trim();
+    const rawDate  = (r[idxDate]     || "").trim();
+    const rawOwner = (r[idxOwner]    || "").trim().replace(/\.+$/, "");
+
+    if (!address) continue;
+
+    let date = rawDate;
+    const dateParts = rawDate.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+    if (dateParts) {
+      const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+      const day   = dateParts[1].padStart(2, "0");
+      const month = months[parseInt(dateParts[2], 10) - 1] || dateParts[2];
+      const year  = dateParts[3];
+      date = `${day} ${month} ${year}`;
+    }
+
+    const addressKey = `${address.toUpperCase()}|${postcode}`;
+    const entry = { address, suburb, state, postcode, date, rawOwner, rawDate };
+
+    if (!addressMap.has(addressKey)) {
+      addressMap.set(addressKey, [entry]);
+    } else {
+      addressMap.get(addressKey).push(entry);
+    }
+  }
+
+  const result = [];
+
+  for (const [, entries] of addressMap) {
+    if (entries.length === 1) {
+      const e = entries[0];
+      const [o1, o2, o3] = splitPriceFinderOwners(e.rawOwner);
+      result.push([e.address, e.suburb, e.state, e.postcode, e.date, o1, o2, o3]);
+    } else {
+      const withParsedDate = entries.map(e => {
+        const m = e.rawDate.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+        const ts = m ? new Date(`${m[3]}-${m[2].padStart(2,"0")}-${m[1].padStart(2,"0")}`).getTime() : 0;
+        return { ...e, ts };
+      });
+
+      const dateGroups = new Map();
+      for (const e of withParsedDate) {
+        const dk = e.ts > 0 ? String(e.ts) : (e.rawDate || "unknown");
+        if (!dateGroups.has(dk)) dateGroups.set(dk, []);
+        dateGroups.get(dk).push(e);
+      }
+
+      if (dateGroups.size === 1) {
+        for (const e of withParsedDate) {
+          const [o1, o2, o3] = splitPriceFinderOwners(e.rawOwner);
+          result.push([e.address, e.suburb, e.state, e.postcode, e.date, o1, o2, o3]);
+        }
+      } else {
+        withParsedDate.sort((a, b) => b.ts - a.ts);
+        const mostRecent = withParsedDate[0];
+        const [o1, o2, o3] = splitPriceFinderOwners(mostRecent.rawOwner);
+        result.push([mostRecent.address, mostRecent.suburb, mostRecent.state, mostRecent.postcode, mostRecent.date, o1, o2, o3]);
+      }
+    }
+  }
+
+  return result;
+}
+
 function isEmpty(name) { return !name || name.trim() === "" || name.trim() === "-"; }
 function tokenize(name) { return normalize(name).split(" ").filter(Boolean); }
 function getFirstLast(name) {
@@ -2031,11 +2114,14 @@ ipcMain.on('start-scrape', async (event, speedMode, isStrictHomeownersOnly, outp
     const fileContent = fs.readFileSync(INPUT_FILE, "utf8");
     let rawRows = parse(fileContent, { relax_quotes: true, skip_empty_lines: true, trim: true, relax_column_count: true });
 
-    // Detect Pricefinder format by checking header row
-    const isPriceFinder = rawRows.length > 0 &&
-      rawRows[0].map(h => h.toLowerCase().trim()).includes("imported_address");
+    // Detect CSV format by checking header row
+    const headerCells = rawRows.length > 0 ? rawRows[0].map(h => h.toLowerCase().trim()) : [];
+    const isPriceFinder    = headerCells.includes("imported_address");
+    const isOwnershipSearch = !isPriceFinder && headerCells.includes("current owners");
 
-    const rows = isPriceFinder ? parsePriceFinderCSV(rawRows) : rawRows;
+    const rows = isPriceFinder     ? parsePriceFinderCSV(rawRows)
+               : isOwnershipSearch ? parseOwnershipSearchCSV(rawRows)
+               : rawRows;
 
     const ownersList = [];
     const ownersByAddress = new Map();
