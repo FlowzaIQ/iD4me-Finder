@@ -181,108 +181,13 @@ const stopBtn = document.getElementById('stopBtn');
 const speedSelect = document.getElementById('speedSelect');
 const etaText = document.getElementById('eta-text');
 
-// Modal Elements
-const csvModal = document.getElementById('csvModal');
-const cancelModalBtn = document.getElementById('cancelModalBtn');
-const proceedModalBtn = document.getElementById('proceedModalBtn');
-
-let isPaused = false;
-
 // 📂 Open Folder Button
 if (openFolderBtn) {
     openFolderBtn.addEventListener('click', () => {
         ipcRenderer.send('open-output-folder');
     });
 }
-
-// ⏸️ Pause Button
-if (pauseBtn) {
-    pauseBtn.addEventListener('click', () => {
-        isPaused = !isPaused;
-        ipcRenderer.send('toggle-pause', isPaused);
-        
-        if (isPaused) {
-            pauseBtn.innerText = "▶️ Resume";
-            pauseBtn.style.backgroundColor = "var(--success)";
-        } else {
-            pauseBtn.innerText = "⏸️ Pause";
-            pauseBtn.style.backgroundColor = "var(--warning)";
-        }
-    });
-}
-
-// 🛑 Stop Button
-if (stopBtn) {
-    stopBtn.addEventListener('click', () => {
-        if (confirm("Are you sure you want to stop the automation? Your progress will be saved safely.")) {
-            stopBtn.disabled = true;
-            stopBtn.innerText = "Stopping...";
-            ipcRenderer.send('stop-scrape');
-        }
-    });
-}
-
-// 🚀 1. Show Popup when Start is clicked
-if (startBtn && csvModal) {
-    startBtn.addEventListener('click', () => {
-        csvModal.style.display = 'flex'; // Show the warning box
-    });
-}
-
-// ❌ 2. Hide Popup if they click Cancel
-if (cancelModalBtn && csvModal) {
-    cancelModalBtn.addEventListener('click', () => {
-        csvModal.style.display = 'none';
-    });
-}
-
-// ✅ 3. Actually start the scraper if they click "I Understand"
-if (proceedModalBtn && csvModal) {
-    proceedModalBtn.addEventListener('click', () => {
-        csvModal.style.display = 'none'; // Hide the box
-        
-        // Lock the UI
-        startBtn.disabled = true;
-        if (speedSelect) speedSelect.disabled = true;
-        startBtn.innerText = "Running...";
-        
-        if (activityList) activityList.innerHTML = ''; 
-        
-        if (pauseBtn) {
-            pauseBtn.classList.remove('hidden');
-            pauseBtn.innerText = "⏸️ Pause";
-            pauseBtn.style.backgroundColor = "var(--warning)";
-        }
-        
-        if (stopBtn) {
-            stopBtn.classList.remove('hidden');
-            stopBtn.disabled = false;
-            stopBtn.innerText = "🛑 Stop";
-        }
-        isPaused = false;
-        
-        const progressContainer = document.getElementById('progress-container');
-        if (progressContainer) progressContainer.style.display = "block";
-        if (progressBar) progressBar.style.width = "0%";
-        if (etaText) etaText.innerText = "ETA: Calculating...";
-        
-        // Grab the speed and trigger the backend
-        const selectedSpeed = speedSelect ? speedSelect.value : 'normal';
-        
-        // 🛡️ Safely grab the toggles from the UI so it doesn't crash!
-        const strictToggle = document.getElementById('strictToggle');
-        const isStrictHomeownersOnly = strictToggle ? strictToggle.checked : false;
-        
-        const dncrToggle = document.getElementById('dncrToggle');
-        const isDncrEnabled = dncrToggle ? dncrToggle.checked : true; // Default true so it checks!
-        
-        const outputSelect = document.getElementById('outputSelect');
-        const outputMode = outputSelect ? outputSelect.value : 'csv';
-
-        // Pass ALL settings to the backend safely
-        ipcRenderer.send('start-scrape', selectedSpeed, isStrictHomeownersOnly, outputMode, isDncrEnabled);
-    });
-} 
+// Start/modal/pause/stop UI is owned by the inline script in index.html
 
 // UI UPDATES FROM BACKEND
 ipcRenderer.on('stats-update', (event, stats) => {

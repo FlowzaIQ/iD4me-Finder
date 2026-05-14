@@ -293,6 +293,20 @@ function clearCheckpoint(csvFilename) {
   if (fs.existsSync(checkpointFile)) fs.unlinkSync(checkpointFile);
 }
 
+// Returns data rows from a local CSV within [fromDataIndex, toDataIndex] (0-based, header excluded)
+function readCsvRowRange(filePath, fromDataIndex, toDataIndex) {
+  try {
+    if (!fs.existsSync(filePath)) return [];
+    const content = fs.readFileSync(filePath, 'utf8');
+    const allRows = parse(content, { relax_quotes: true, skip_empty_lines: true, trim: true });
+    if (allRows.length <= 1) return [];
+    const dataRows = allRows.slice(1); // skip header
+    return dataRows.slice(fromDataIndex, toDataIndex + 1);
+  } catch (e) {
+    return [];
+  }
+}
+
 async function askWhetherToSaveSessionCsv(outputFile, isResumedSession = false) {
   if (!mainWindow || mainWindow.isDestroyed() || !outputFile) return true;
 
@@ -867,6 +881,10 @@ async function ensureNormalSearch(page) {
   try {
     if (page.isClosed()) throw new Error("Target closed");
 
+    // Bring the page into focus so dropdown clicks register even when the window
+    // is running in the background or behind other windows.
+    await page.bringToFront().catch(() => {});
+
     const normalModeBtn = page.getByRole('button', { name: /^search$/i }).first();
     const smartModeBtn = page.getByRole('button', { name: /smart search/i }).first();
 
@@ -885,15 +903,28 @@ async function ensureNormalSearch(page) {
 
     // Smart search is active — switch to normal via the split-button dropdown.
     if (await smartModeBtn.isVisible().catch(() => false)) {
-      const dropdown = page.getByTestId('split-button-dropdown-button');
-      if (await dropdown.count() > 0) {
-        await dropdown.click({ timeout: 3000 });
+      // Retry the dropdown interaction up to 3 times — menus can fail to open
+      // on the first click if the page is still animating or not fully focused.
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const dropdown = page.getByTestId('split-button-dropdown-button');
+        if (await dropdown.count() === 0) break;
+
+        await dropdown.click({ timeout: 3000, force: true });
+        // Wait for the menu to open before looking for the item.
+        await page.waitForTimeout(400);
+
         const normalItem = page.getByRole('menuitem', { name: 'Search', exact: true });
-        if (await normalItem.count() > 0) {
-          await normalItem.click({ timeout: 3000 });
+        const itemVisible = await normalItem.isVisible().catch(() => false);
+        if (itemVisible) {
+          await normalItem.click({ timeout: 3000, force: true });
           if (!isFastMode()) await randomDelay(400, 700);
-          // Confirm the switch succeeded before continuing.
-          await normalModeBtn.waitFor({ state: 'visible', timeout: 5000 }).catch(() => {});
+          // Confirm the switch succeeded.
+          const switched = await normalModeBtn.waitFor({ state: 'visible', timeout: 5000 }).then(() => true).catch(() => false);
+          if (switched) break;
+        } else {
+          // Menu didn't open — press Escape to reset and retry.
+          await page.keyboard.press('Escape').catch(() => {});
+          await page.waitForTimeout(300);
         }
       }
     }
@@ -1455,6 +1486,10 @@ async function resolveAbsenteeOwner(page, ownerName, propertyState) {
     });
 
     if (decision.resolved) {
+      if (decision.multipleRows) {
+        addActivity(`Absentee multi-match for ${ownerName}: ${decision.multipleRows.length} numbers found`, 'success');
+        return { resolved: true, multipleRows: decision.multipleRows };
+      }
       addActivity(`Absentee resolved for ${ownerName}: ${decision.mobile}`, 'success');
       return { resolved: true, mobile: decision.mobile, absenteeAddr: decision.addr || "" };
     }
@@ -1751,7 +1786,7 @@ function loadGoogleTokens() {
 }
 
 async function flushSheetsBuffer(sheetsClient, spreadsheetId, buffer) {
-    if (!sheetsClient || !buffer.length) return;
+    if (!sheetsClient || !spreadsheetId || !buffer.length) return;
     const rows = buffer.splice(0, buffer.length);
     try {
         await sheetsClient.spreadsheets.values.append({
@@ -1762,6 +1797,9 @@ async function flushSheetsBuffer(sheetsClient, spreadsheetId, buffer) {
         });
     } catch (e) {
         console.error('Sheets flush error:', e.message);
+        addActivity(`Google Sheets sync error: ${e.message}`, 'danger');
+        // Return rows to the buffer so they are not lost between flush attempts
+        buffer.unshift(...rows);
     }
 }
 
@@ -1973,11 +2011,21 @@ ipcMain.on('force-close-windows', async () => {
 
 // 🚀 Main Scraper Logic
 ipcMain.on('start-scrape', async (event, speedMode, isStrictHomeownersOnly, outputMode, dncrEnabled = false, absenteeEnabled = false, headlessEnabled = false, liveSheets = false) => {
+  if (isScrapeRunning) {
+      updateStatus("A run is already in progress.", false);
+      return;
+  }
   let browser;
   let OUTPUT_FILE = null;
   let selectedFile = "";
   let stream = null;
   let stoppedEarly = false;
+  // Sheets state — declared here so the catch block can always reference them
+  let sheetsClient = null;
+  let sheetsSpreadsheetId = null;
+  let sheetsBuffer = [];
+  let sheetsFlushInterval = null;
+  let sheetsHighWaterMark = -1; // highest ownersList index confirmed written to the sheet
   isScrapeRunning = true;
   hasProcessedAnyRow = false;
   const seenRelativesByAddress = new Map();
@@ -2031,6 +2079,12 @@ ipcMain.on('start-scrape', async (event, speedMode, isStrictHomeownersOnly, outp
     selectedFile = path.basename(INPUT_FILE);
     globalSelectedFile = selectedFile;
     addActivity(`Loaded file: ${selectedFile}`, 'info');
+
+    // Wrapper so every checkpoint automatically carries sheetsLastIndex when a sheet is active
+    const checkpointSave = (index, file, extra = {}) => {
+        const sheetsExtra = sheetsSpreadsheetId ? { sheetsLastIndex: sheetsHighWaterMark } : {};
+        saveCheckpoint(selectedFile, index, file, { ...sheetsExtra, ...extra });
+    };
 
     let startIndex = 0;
     let checkpoint = null;
@@ -2200,26 +2254,39 @@ ipcMain.on('start-scrape', async (event, speedMode, isStrictHomeownersOnly, outp
     }
 
     // 📊 Google Sheets live output setup
-    let sheetsClient = null;
-    let sheetsSpreadsheetId = null;
-    let sheetsBuffer = [];
-    let sheetsFlushInterval = null;
-
     if (liveSheets) {
         try {
             const tokens = loadGoogleTokens();
-            if (!tokens?.refresh_token) throw new Error('Google account not connected');
+            if (!tokens?.refresh_token) throw new Error('Google account not connected. Please reconnect in the sidebar.');
             const oauth2Client = createOAuth2Client();
             oauth2Client.setCredentials(tokens);
+            // Persist any refreshed tokens so they remain valid across restarts
+            oauth2Client.on('tokens', (newTokens) => {
+                try {
+                    const existing = loadGoogleTokens() || {};
+                    fs.writeFileSync(GOOGLE_AUTH_FILE, JSON.stringify({ ...existing, ...newTokens }, null, 2));
+                } catch (e) {}
+            });
             sheetsClient = google.sheets({ version: 'v4', auth: oauth2Client });
 
             const savedSheetId = checkpoint?.spreadsheetId;
 
             if (savedSheetId && startIndex > 0) {
-                // ── RESUME: reconnect to the existing sheet, no new header ──
+                // ── RESUME: reconnect to the existing sheet ──
                 sheetsSpreadsheetId = savedSheetId;
                 const sheetsUrl = checkpoint.sheetsUrl || `https://docs.google.com/spreadsheets/d/${savedSheetId}`;
                 mainWindow.webContents.send('sheets-url', sheetsUrl);
+
+                // Backfill any rows that were collected in offline runs since the sheet was last updated
+                sheetsHighWaterMark = checkpoint.sheetsLastIndex ?? -1;
+                const backfillStart = sheetsHighWaterMark + 1;
+                if (backfillStart < startIndex && OUTPUT_FILE && fs.existsSync(OUTPUT_FILE)) {
+                    const missing = readCsvRowRange(OUTPUT_FILE, backfillStart, startIndex - 1);
+                    if (missing.length > 0) {
+                        sheetsBuffer.push(...missing);
+                        addActivity(`Backfilling ${missing.length} row(s) from previous offline session into Google Sheet...`, 'info');
+                    }
+                }
                 addActivity('Resuming Google Sheets live view — appending to existing sheet.', 'success');
             } else {
                 // ── FRESH RUN: create a new sheet and write the header ──
@@ -2230,26 +2297,37 @@ ipcMain.on('start-scrape', async (event, speedMode, isStrictHomeownersOnly, outp
                 });
                 sheetsSpreadsheetId = sheet.data.spreadsheetId;
                 const sheetsUrl = `https://docs.google.com/spreadsheets/d/${sheetsSpreadsheetId}`;
-                await drive.permissions.create({
-                    fileId: sheetsSpreadsheetId,
-                    requestBody: { role: 'reader', type: 'anyone' }
-                });
+
+                // Send the URL immediately — before permissions so the link is never lost
                 mainWindow.webContents.send('sheets-url', sheetsUrl);
-                // Persist the sheet ID immediately so every subsequent saveCheckpoint keeps it
+                // Persist the sheet ID so every subsequent saveCheckpoint keeps it
                 saveCheckpoint(selectedFile, startIndex - 1, OUTPUT_FILE, {
                     spreadsheetId: sheetsSpreadsheetId,
-                    sheetsUrl
+                    sheetsUrl,
+                    sheetsLastIndex: -1,
                 });
+
+                // Make the sheet publicly readable (may fail under strict Workspace policies)
+                try {
+                    await drive.permissions.create({
+                        fileId: sheetsSpreadsheetId,
+                        requestBody: { role: 'reader', type: 'anyone' }
+                    });
+                } catch (permErr) {
+                    addActivity(`Sheet created but public link failed: ${permErr.message}`, 'warning');
+                }
+
                 const headerRow = absenteeEnabled
                     ? ["Original_Name","Original_Address","Match_Status","Found_Name","Found_Mobile","DNCR_Status","Found_Landline","Found_Email","Found_LastSeen","Last_Sold_Date","Absentee_Address"]
                     : ["Original_Name","Original_Address","Match_Status","Found_Name","Found_Mobile","DNCR_Status","Found_Landline","Found_Email","Found_LastSeen","Last_Sold_Date"];
                 sheetsBuffer.push(headerRow);
+                sheetsHighWaterMark = -1;
                 addActivity('Google Sheets live view created — link shown above.', 'success');
             }
 
             sheetsFlushInterval = setInterval(() => flushSheetsBuffer(sheetsClient, sheetsSpreadsheetId, sheetsBuffer), 5000);
         } catch (e) {
-            addActivity(`Google Sheets setup failed: ${e.message}. Continuing with local CSV only.`, 'warning');
+            addActivity(`Google Sheets setup failed: ${e.message}. Continuing with local CSV only.`, 'danger');
             liveSheets = false;
         }
     }
@@ -2275,7 +2353,7 @@ ipcMain.on('start-scrape', async (event, speedMode, isStrictHomeownersOnly, outp
           addActivity(`🛑 Automation stopped manually!`, 'danger');
           updateStatus("Stopped - Session Saved", false);
           // Row i hasn't been processed yet — save i-1 so resume correctly retries row i
-          saveCheckpoint(selectedFile, i - 1, OUTPUT_FILE);
+          checkpointSave(i - 1, OUTPUT_FILE);
           stoppedEarly = true;
           break; // This kicks the script out of the loop completely
       }
@@ -2345,20 +2423,26 @@ ipcMain.on('start-scrape', async (event, speedMode, isStrictHomeownersOnly, outp
         if (absenteeResolved && absenteeResolved.resolved) {
             handledAbsentee = true;
             stats.found++;
-            addActivity(`${ownerName} - Absentee resolved`, 'success');
 
-            let absenteeDncr = "N/A";
-            if (dncrEnabled && absenteeResolved.mobile) {
-                const absenteeMobile = absenteeResolved.mobile.replace(/\D/g, '');
-                const fakePerson = { Name: ownerName, Mobile: absenteeMobile, Status: RESOLVED_STATUS };
-                const enriched = await enrichPeopleWithDncr(page, [fakePerson]);
-                absenteeDncr = enriched[0]?.DNCR || "unknown";
+            // Normalise to a list — multi-mobile rule returns multipleRows, single-match returns one entry
+            const matchList = absenteeResolved.multipleRows
+                ? absenteeResolved.multipleRows.map(r => ({ mobile: r.mobile, absenteeAddr: r.addr || "N/A" }))
+                : [{ mobile: absenteeResolved.mobile, absenteeAddr: absenteeResolved.absenteeAddr || "N/A" }];
+
+            addActivity(`${ownerName} - Absentee resolved (${matchList.length} number${matchList.length !== 1 ? 's' : ''})`, 'success');
+
+            for (const match of matchList) {
+                let absenteeDncr = "N/A";
+                if (dncrEnabled && match.mobile) {
+                    const absenteeMobile = match.mobile.replace(/\D/g, '');
+                    const fakePerson = { Name: ownerName, Mobile: absenteeMobile, Status: RESOLVED_STATUS };
+                    const enriched = await enrichPeopleWithDncr(page, [fakePerson]);
+                    absenteeDncr = enriched[0]?.DNCR || "unknown";
+                }
+                const absenteeRow = [ownerName, address, RESOLVED_STATUS, ownerName, match.mobile || "N/A", absenteeDncr, "N/A", "N/A", "N/A", lastSoldDate || "N/A"];
+                if (absenteeEnabled) absenteeRow.push(match.absenteeAddr);
+                writeRow(absenteeRow);
             }
-
-            const absenteeAddrCell = absenteeResolved.absenteeAddr || "N/A";
-            const absenteeRow = [ownerName, address, RESOLVED_STATUS, ownerName, absenteeResolved.mobile || "N/A", absenteeDncr, "N/A", "N/A", "N/A", lastSoldDate || "N/A"];
-            if (absenteeEnabled) absenteeRow.push(absenteeAddrCell);
-            writeRow(absenteeRow);
         }
 
 // 🚀 THE FINAL FILTER GATE
@@ -2473,8 +2557,9 @@ ipcMain.on('start-scrape', async (event, speedMode, isStrictHomeownersOnly, outp
             ? sampleMs
             : (ETA_EMA_ALPHA * sampleMs + (1 - ETA_EMA_ALPHA) * emaProcessingMs);
 
+        if (liveSheets) sheetsHighWaterMark = i;
         updateProgress();
-        saveCheckpoint(selectedFile, i, OUTPUT_FILE);
+        checkpointSave(i, OUTPUT_FILE);
 
       } catch (rowError) {
         const errMsg = rowError.message || "";
@@ -2484,7 +2569,7 @@ ipcMain.on('start-scrape', async (event, speedMode, isStrictHomeownersOnly, outp
             addActivity(`Authentication Failed: Please verify your ID4Me credentials in the sidebar.`, 'danger');
             updateStatus("Session Aborted - Invalid Login", false);
             // Row i failed without writing output — save i-1 so resume retries row i
-            saveCheckpoint(selectedFile, i - 1, OUTPUT_FILE);
+            checkpointSave(i - 1, OUTPUT_FILE);
             stoppedEarly = true;
 
             // Just break the loop! Do NOT close the browser here or it causes a deadlock!
@@ -2501,7 +2586,7 @@ ipcMain.on('start-scrape', async (event, speedMode, isStrictHomeownersOnly, outp
         if (isSessionConflict) {
             addActivity(`🛑 Error 23: Multiple active sessions detected!`, 'danger');
             updateStatus("Session Conflict - Automation Paused", false);
-            saveCheckpoint(selectedFile, i - 1, OUTPUT_FILE);
+            checkpointSave(i - 1, OUTPUT_FILE);
             stoppedEarly = true;
             break;
         }
@@ -2510,7 +2595,7 @@ ipcMain.on('start-scrape', async (event, speedMode, isStrictHomeownersOnly, outp
         if (errMsg.includes("Target closed") || errMsg.includes("browser has been closed") || (page && page.isClosed())) {
             addActivity(`🛑 Browser was closed manually! Automation paused.`, 'danger');
             updateStatus("Browser Closed - Session Saved", false);
-            saveCheckpoint(selectedFile, i - 1, OUTPUT_FILE);
+            checkpointSave(i - 1, OUTPUT_FILE);
             stoppedEarly = true;
             break;
         }
@@ -2519,7 +2604,7 @@ ipcMain.on('start-scrape', async (event, speedMode, isStrictHomeownersOnly, outp
         if (isNetworkFailure(errMsg)) {
             addActivity(`🌐 Network failure detected. Session saved.`, 'danger');
             updateStatus("Network Lost - Session Saved", false);
-            saveCheckpoint(selectedFile, i - 1, OUTPUT_FILE);
+            checkpointSave(i - 1, OUTPUT_FILE);
             stoppedEarly = true;
             break;
         }
@@ -2530,10 +2615,10 @@ ipcMain.on('start-scrape', async (event, speedMode, isStrictHomeownersOnly, outp
         const errorRow = [ownerName, address, "SCRIPT_ERROR", errMsg, "N/A", "N/A", "N/A", "N/A", "N/A", lastSoldDate || "N/A"];
         if (absenteeEnabled) errorRow.push("");
         writeRow(errorRow);
-        
+        if (liveSheets) sheetsHighWaterMark = i;
         sendStats();
         updateProgress();
-        saveCheckpoint(selectedFile, i, OUTPUT_FILE);
+        checkpointSave(i, OUTPUT_FILE);
         
         try { if (!page.isClosed()) await page.reload(); } catch (e) {}
         continue;
@@ -2589,7 +2674,7 @@ ipcMain.on('start-scrape', async (event, speedMode, isStrictHomeownersOnly, outp
         updateStatus("Job Complete!", false);
         addActivity("Finished processing all records successfully.", 'info');
         // Save a "completed" marker so re-opening this CSV shows a one-time notice
-        saveCheckpoint(selectedFile, ownersList.length - 1, OUTPUT_FILE, { completed: true, totalRows: ownersList.length });
+        checkpointSave(ownersList.length - 1, OUTPUT_FILE, { completed: true, totalRows: ownersList.length });
     }
     
     if (browser && browser.isConnected()) await browser.close();

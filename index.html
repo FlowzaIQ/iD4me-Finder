@@ -1021,6 +1021,7 @@
                         speedSelect.value = option.dataset.value;
                         syncSpeedDropdown();
                         closeSpeedDropdown();
+                        saveUISettings();
                     });
                 });
 
@@ -1098,6 +1099,17 @@
                     });
                 };
 
+                const saveUISettings = () => {
+                    ipcRenderer.send('save-csv-settings', {
+                        isDncrEnabled,
+                        isAbsenteeEnabled,
+                        isHeadlessEnabled,
+                        isStrictHomeownersOnly,
+                        isLiveSheetsEnabled,
+                        speed: speedSelect ? speedSelect.value : 'normal',
+                    });
+                };
+
                 if (toolbarSettingsBtn) {
                     toolbarSettingsBtn.addEventListener('click', () => {
                         if (settingsModal) settingsModal.style.display = 'flex';
@@ -1114,6 +1126,7 @@
                         if (settingsDncrToggle.classList.contains('disabled')) return;
                         isDncrEnabled = !isDncrEnabled;
                         setToggleState(settingsDncrToggle, settingsDncrState, isDncrEnabled);
+                        saveUISettings();
                     });
                 }
 
@@ -1127,6 +1140,7 @@
                         }
                         isAbsenteeEnabled = false;
                         setToggleState(settingsAbsenteeToggle, settingsAbsenteeState, false);
+                        saveUISettings();
                     });
                 }
 
@@ -1135,6 +1149,7 @@
                         if (settingsHeadlessToggle.classList.contains('disabled')) return;
                         isHeadlessEnabled = !isHeadlessEnabled;
                         setToggleState(settingsHeadlessToggle, settingsHeadlessState, isHeadlessEnabled);
+                        saveUISettings();
                     });
                 }
 
@@ -1143,14 +1158,28 @@
                         if (settingsHomeownersToggle.classList.contains('disabled')) return;
                         isStrictHomeownersOnly = !isStrictHomeownersOnly;
                         setToggleState(settingsHomeownersToggle, settingsHomeownersState, isStrictHomeownersOnly);
+                        saveUISettings();
                     });
                 }
 
-                setToggleState(settingsDncrToggle, settingsDncrState, isDncrEnabled);
-                setToggleState(settingsAbsenteeToggle, settingsAbsenteeState, isAbsenteeEnabled);
-                setToggleState(settingsHeadlessToggle, settingsHeadlessState, isHeadlessEnabled);
-                setToggleState(settingsHomeownersToggle, settingsHomeownersState, isStrictHomeownersOnly);
-                setToggleState(settingsSheetsToggle, settingsSheetsState, isLiveSheetsEnabled);
+                // Load persisted settings, then apply to toggles and speed
+                (async () => {
+                    try {
+                        const saved = await ipcRenderer.invoke('get-csv-settings');
+                        if (saved.isDncrEnabled !== undefined) isDncrEnabled = saved.isDncrEnabled;
+                        if (saved.isAbsenteeEnabled !== undefined) isAbsenteeEnabled = saved.isAbsenteeEnabled;
+                        if (saved.isHeadlessEnabled !== undefined) isHeadlessEnabled = saved.isHeadlessEnabled;
+                        if (saved.isStrictHomeownersOnly !== undefined) isStrictHomeownersOnly = saved.isStrictHomeownersOnly;
+                        if (saved.isLiveSheetsEnabled !== undefined) isLiveSheetsEnabled = saved.isLiveSheetsEnabled;
+                        if (saved.speed && speedSelect) { speedSelect.value = saved.speed; syncSpeedDropdown(); }
+                    } catch (e) {}
+                    setToggleState(settingsDncrToggle, settingsDncrState, isDncrEnabled);
+                    setToggleState(settingsAbsenteeToggle, settingsAbsenteeState, isAbsenteeEnabled);
+                    setToggleState(settingsHeadlessToggle, settingsHeadlessState, isHeadlessEnabled);
+                    setToggleState(settingsHomeownersToggle, settingsHomeownersState, isStrictHomeownersOnly);
+                    setToggleState(settingsSheetsToggle, settingsSheetsState, isLiveSheetsEnabled);
+                    updateGoogleAccountUI(googleAuthStatus);
+                })();
 
                 // --- 📊 GOOGLE SHEETS TOGGLE ---
                 const updateGoogleAccountUI = (status) => {
@@ -1181,6 +1210,7 @@
                         if (settingsSheetsToggle.classList.contains('disabled')) return;
                         isLiveSheetsEnabled = !isLiveSheetsEnabled;
                         setToggleState(settingsSheetsToggle, settingsSheetsState, isLiveSheetsEnabled);
+                        saveUISettings();
                         // Reset connect button if it got stuck while the panel was hidden
                         if (googleConnectBtn) {
                             googleConnectBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg> Connect Account';
@@ -1256,6 +1286,7 @@
                         pendingAbsenteeEnable = false;
                         isAbsenteeEnabled = true;
                         setToggleState(settingsAbsenteeToggle, settingsAbsenteeState, true);
+                        saveUISettings();
                     });
                 }
 

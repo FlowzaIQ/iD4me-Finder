@@ -1,6 +1,7 @@
 const normalizeLoose = (txt) => (txt || "").toLowerCase().replace(/\s+/g, " ").trim();
-const MAX_RESULT_COUNT = 20;
+const MAX_RESULT_COUNT = 35;
 const RESOLVED_STATUS = "POTENTIAL_ABSENTEE";
+const HIGH_FREQ_THRESHOLD = 3; // mobiles appearing this many times or more qualify for multi-row output
 
 const AU_STATES = ['QLD', 'NSW', 'VIC', 'WA', 'SA', 'TAS', 'ACT', 'NT'];
 
@@ -62,6 +63,24 @@ function pickBest(groupCounts, mobileCounts, nameCounts) {
     return best;
 }
 
+// Returns the most frequently occurring address for a given mobile across the raw result rows.
+function getMostCommonAddr(rows, targetMobile) {
+    const addrCounts = new Map();
+    for (const row of rows) {
+        const mobile = (row && row.mobile ? `${row.mobile}` : "").replace(/\D/g, "");
+        if (mobile !== targetMobile) continue;
+        const addr = (row && row.addr ? row.addr : "").trim();
+        if (!addr) continue;
+        addrCounts.set(addr, (addrCounts.get(addr) || 0) + 1);
+    }
+    let bestAddr = "";
+    let bestCount = 0;
+    for (const [addr, count] of addrCounts.entries()) {
+        if (count > bestCount) { bestCount = count; bestAddr = addr; }
+    }
+    return bestAddr;
+}
+
 function evaluateAbsenteeResolution(rows, options) {
     const maxResultCount = options.maxResultCount;
     const propertyState = options.propertyState || null;
@@ -97,6 +116,23 @@ function evaluateAbsenteeResolution(rows, options) {
 
     if (groupCounts.size === 0) {
         return { resolved: false, reason: "no_mobile", total };
+    }
+
+    // HIGH-FREQUENCY RULE
+    // Any mobile appearing >= HIGH_FREQ_THRESHOLD times is considered strongly confirmed.
+    // State filtering is bypassed entirely for these candidates.
+    // 1 qualifier → return it directly. 2+ qualifiers → return all as multipleRows.
+    const highFreqMobiles = [...mobileCounts.entries()].filter(([, count]) => count >= HIGH_FREQ_THRESHOLD);
+    if (highFreqMobiles.length === 1) {
+        const [mobile] = highFreqMobiles[0];
+        return { resolved: true, mobile, addr: getMostCommonAddr(rows, mobile), total };
+    }
+    if (highFreqMobiles.length >= 2) {
+        const multipleRows = highFreqMobiles.map(([mobile]) => ({
+            mobile,
+            addr: getMostCommonAddr(rows, mobile),
+        }));
+        return { resolved: true, multipleRows, total };
     }
 
     // Case: ≤5 total results — too few to be ambiguous, use best-pick regardless of state.
