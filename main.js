@@ -1841,7 +1841,23 @@ function createWindow() {
 
 app.whenReady().then(() => {
   createWindow();
-  autoUpdater.checkForUpdatesAndNotify();
+  autoUpdater.checkForUpdates();
+});
+
+autoUpdater.on('checking-for-update', () => {
+  dialog.showMessageBox({ message: 'Checking for update...' });
+});
+
+autoUpdater.on('update-available', (info) => {
+  dialog.showMessageBox({ message: `Update available: ${info.version}` });
+});
+
+autoUpdater.on('update-not-available', (info) => {
+  dialog.showMessageBox({ message: `No update available. Current version: ${info.version}` });
+});
+
+autoUpdater.on('error', (err) => {
+  dialog.showMessageBox({ message: `Update error: ${err.message}` });
 });
 
 autoUpdater.on('update-downloaded', () => {
