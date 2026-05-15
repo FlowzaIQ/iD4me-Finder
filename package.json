@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "description": "ID4Me Automation Tool",
   "main": "main.js",
-  "author": "Your Name",
+  "author": "Flowza IQ",
   "scripts": {
     "start": "electron .",
     "build:mac": "electron-builder --mac",
@@ -16,10 +16,17 @@
     "directories": {
       "output": "release"
     },
+    "publish": {
+      "provider": "github",
+      "owner": "FlowzaIQ",
+      "repo": "iD4me-Finder"
+    },
     "mac": {
       "target": {
         "target": "dmg",
-        "arch": ["universal"]
+        "arch": [
+          "universal"
+        ]
       },
       "icon": "assets/favicon2.icns"
     },
@@ -32,6 +39,7 @@
     "@google/generative-ai": "^0.24.1",
     "csv-parse": "^5.5.5",
     "csv-stringify": "^6.4.6",
+    "electron-updater": "^6.8.3",
     "googleapis": "^171.4.0",
     "playwright": "^1.42.0"
   },

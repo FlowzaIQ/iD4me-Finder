@@ -2,6 +2,11 @@ name: Build Windows
 
 on:
   workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g. v1.1.0)'
+        required: true
+        default: 'v1.0.0'
 
 permissions:
   contents: write
@@ -26,14 +31,23 @@ jobs:
         run: |
           "module.exports = { GOOGLE_CLIENT_ID: '${{ secrets.GOOGLE_CLIENT_ID }}', GOOGLE_CLIENT_SECRET: '${{ secrets.GOOGLE_CLIENT_SECRET }}' };" | Out-File -FilePath secrets.js -Encoding utf8
 
+      - name: Set version in package.json
+        run: |
+          $tag = "${{ github.event.inputs.tag }}" -replace '^v', ''
+          npm version $tag --no-git-tag-version
+
       - name: Build Windows
-        run: npm run build:win -- --publish never
+        run: npm run build:win
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload installer to Release
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: v1.0.0
-          files: release/*.exe
+          tag_name: ${{ github.event.inputs.tag }}
+          files: |
+            release/*.exe
+            release/*.yml
           overwrite: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
