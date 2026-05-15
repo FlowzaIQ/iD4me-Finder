@@ -33,7 +33,7 @@
     "win": {
       "target": "nsis",
       "icon": "assets/icon.ico",
-      "artifactName": "${productName}-Setup-${version}.exe"
+      "artifactName": "ID4Me-Scraper-Setup-${version}.exe"
     }
   },
   "dependencies": {
