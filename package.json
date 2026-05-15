@@ -1,6 +1,6 @@
 {
   "name": "id4me-scraper",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "description": "ID4Me Automation Tool",
   "main": "main.js",
   "author": "Flowza IQ",
@@ -32,7 +32,8 @@
     },
     "win": {
       "target": "nsis",
-      "icon": "assets/icon.ico"
+      "icon": "assets/icon.ico",
+      "artifactName": "${productName}-Setup-${version}.exe"
     }
   },
   "dependencies": {
