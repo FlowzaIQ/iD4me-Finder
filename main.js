@@ -882,10 +882,6 @@ async function ensureNormalSearch(page) {
   try {
     if (page.isClosed()) throw new Error("Target closed");
 
-    // Bring the page into focus so dropdown clicks register even when the window
-    // is running in the background or behind other windows.
-    await page.bringToFront().catch(() => {});
-
     const normalModeBtn = page.getByRole('button', { name: /^search$/i }).first();
     const smartModeBtn = page.getByRole('button', { name: /smart search/i }).first();
 
