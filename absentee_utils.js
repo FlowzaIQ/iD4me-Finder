@@ -81,6 +81,17 @@ function getMostCommonAddr(rows, targetMobile) {
     return bestAddr;
 }
 
+// Returns the first non-empty value of a field among rows matching the given mobile.
+function getFirstFieldForMobile(rows, targetMobile, field) {
+    for (const row of rows) {
+        const mobile = (row && row.mobile ? `${row.mobile}` : "").replace(/\D/g, "");
+        if (mobile !== targetMobile) continue;
+        const val = (row && row[field] ? `${row[field]}` : "").trim();
+        if (val) return val;
+    }
+    return "";
+}
+
 function evaluateAbsenteeResolution(rows, options) {
     const maxResultCount = options.maxResultCount;
     const propertyState = options.propertyState || null;
@@ -109,8 +120,12 @@ function evaluateAbsenteeResolution(rows, options) {
         nameCounts.set(name, (nameCounts.get(name) || 0) + 1);
 
         const key = `${name}|${mobile}`;
-        const entry = groupCounts.get(key) || { count: 0, name, mobile, addr };
+        const entry = groupCounts.get(key) || { count: 0, name, mobile, addr, landline: "", email: "", lastSeen: "" };
         entry.count += 1;
+        // Keep the first non-empty value seen for each contact field
+        if (!entry.landline && row && row.landline) entry.landline = `${row.landline}`.trim();
+        if (!entry.email && row && row.email) entry.email = `${row.email}`.trim();
+        if (!entry.lastSeen && row && row.lastSeen) entry.lastSeen = `${row.lastSeen}`.trim();
         groupCounts.set(key, entry);
     }
 
@@ -125,12 +140,21 @@ function evaluateAbsenteeResolution(rows, options) {
     const highFreqMobiles = [...mobileCounts.entries()].filter(([, count]) => count >= HIGH_FREQ_THRESHOLD);
     if (highFreqMobiles.length === 1) {
         const [mobile] = highFreqMobiles[0];
-        return { resolved: true, mobile, addr: getMostCommonAddr(rows, mobile), total };
+        return {
+            resolved: true, mobile, total,
+            addr: getMostCommonAddr(rows, mobile),
+            landline: getFirstFieldForMobile(rows, mobile, "landline"),
+            email: getFirstFieldForMobile(rows, mobile, "email"),
+            lastSeen: getFirstFieldForMobile(rows, mobile, "lastSeen"),
+        };
     }
     if (highFreqMobiles.length >= 2) {
         const multipleRows = highFreqMobiles.map(([mobile]) => ({
             mobile,
             addr: getMostCommonAddr(rows, mobile),
+            landline: getFirstFieldForMobile(rows, mobile, "landline"),
+            email: getFirstFieldForMobile(rows, mobile, "email"),
+            lastSeen: getFirstFieldForMobile(rows, mobile, "lastSeen"),
         }));
         return { resolved: true, multipleRows, total };
     }
@@ -138,7 +162,7 @@ function evaluateAbsenteeResolution(rows, options) {
     // Case: ≤5 total results — too few to be ambiguous, use best-pick regardless of state.
     if (total <= 5) {
         const best = pickBest(groupCounts, mobileCounts, nameCounts);
-        return { resolved: true, mobile: best.mobile, name: best.name, addr: best.addr || "", total };
+        return { resolved: true, mobile: best.mobile, name: best.name, addr: best.addr || "", landline: best.landline || "", email: best.email || "", lastSeen: best.lastSeen || "", total };
     }
 
     // Cases for 6–20 results: apply same-state prioritisation when property state is known.
@@ -153,7 +177,7 @@ function evaluateAbsenteeResolution(rows, options) {
         if (sameStateCandidates.size > 0) {
             // Same-state results exist — pick the best one, ignore interstate entirely.
             const best = pickBest(sameStateCandidates, mobileCounts, nameCounts);
-            return { resolved: true, mobile: best.mobile, name: best.name, addr: best.addr || "", total };
+            return { resolved: true, mobile: best.mobile, name: best.name, addr: best.addr || "", landline: best.landline || "", email: best.email || "", lastSeen: best.lastSeen || "", total };
         }
 
         // No same-state results found.
@@ -167,7 +191,7 @@ function evaluateAbsenteeResolution(rows, options) {
 
     // Fallback: no property state provided, or no-same-state with ≤3 unique mobiles.
     const best = pickBest(groupCounts, mobileCounts, nameCounts);
-    return { resolved: true, mobile: best.mobile, name: best.name, addr: best.addr || "", total };
+    return { resolved: true, mobile: best.mobile, name: best.name, addr: best.addr || "", landline: best.landline || "", email: best.email || "", lastSeen: best.lastSeen || "", total };
 }
 
 module.exports = {

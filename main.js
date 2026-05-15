@@ -1492,7 +1492,7 @@ async function resolveAbsenteeOwner(page, ownerName, propertyState) {
         return { resolved: true, multipleRows: decision.multipleRows };
       }
       addActivity(`Absentee resolved for ${ownerName}: ${decision.mobile}`, 'success');
-      return { resolved: true, mobile: decision.mobile, absenteeAddr: decision.addr || "" };
+      return { resolved: true, mobile: decision.mobile, absenteeAddr: decision.addr || "", landline: decision.landline || "", email: decision.email || "", lastSeen: decision.lastSeen || "" };
     }
 
     if (decision.reason === "no_results") {
@@ -2442,8 +2442,8 @@ ipcMain.on('start-scrape', async (event, speedMode, isStrictHomeownersOnly, outp
 
             // Normalise to a list — multi-mobile rule returns multipleRows, single-match returns one entry
             const matchList = absenteeResolved.multipleRows
-                ? absenteeResolved.multipleRows.map(r => ({ mobile: r.mobile, absenteeAddr: r.addr || "N/A" }))
-                : [{ mobile: absenteeResolved.mobile, absenteeAddr: absenteeResolved.absenteeAddr || "N/A" }];
+                ? absenteeResolved.multipleRows.map(r => ({ mobile: r.mobile, absenteeAddr: r.addr || "N/A", landline: r.landline || "N/A", email: r.email || "N/A", lastSeen: r.lastSeen || "N/A" }))
+                : [{ mobile: absenteeResolved.mobile, absenteeAddr: absenteeResolved.absenteeAddr || "N/A", landline: absenteeResolved.landline || "N/A", email: absenteeResolved.email || "N/A", lastSeen: absenteeResolved.lastSeen || "N/A" }];
 
             addActivity(`${ownerName} - Absentee resolved (${matchList.length} number${matchList.length !== 1 ? 's' : ''})`, 'success');
 
@@ -2455,7 +2455,7 @@ ipcMain.on('start-scrape', async (event, speedMode, isStrictHomeownersOnly, outp
                     const enriched = await enrichPeopleWithDncr(page, [fakePerson]);
                     absenteeDncr = enriched[0]?.DNCR || "unknown";
                 }
-                const absenteeRow = [ownerName, address, RESOLVED_STATUS, ownerName, match.mobile || "N/A", absenteeDncr, "N/A", "N/A", "N/A", lastSoldDate || "N/A"];
+                const absenteeRow = [ownerName, address, RESOLVED_STATUS, ownerName, match.mobile || "N/A", absenteeDncr, match.landline || "N/A", match.email || "N/A", match.lastSeen || "N/A", lastSoldDate || "N/A"];
                 if (absenteeEnabled) absenteeRow.push(match.absenteeAddr);
                 writeRow(absenteeRow);
             }

@@ -124,7 +124,7 @@ if (loginBtn) {
             if (isAuthorized) {
                 // ?? Personalize the Dashboard!
                 if (dashboardTitle) {
-                    dashboardTitle.innerText = `Just testing this thing out...`;
+                    dashboardTitle.innerText = `App for cool kids only`;
                 }
 
                 // ?? Trigger the premium unlock animation
