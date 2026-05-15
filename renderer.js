@@ -124,7 +124,7 @@ if (loginBtn) {
             if (isAuthorized) {
                 // ?? Personalize the Dashboard!
                 if (dashboardTitle) {
-                    dashboardTitle.innerText = `Welcome, ${authorizedUsername}`;
+                    dashboardTitle.innerText = `Just testing this thing out...`;
                 }
 
                 // ?? Trigger the premium unlock animation
