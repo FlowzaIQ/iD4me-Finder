@@ -26,16 +26,24 @@ async function fetchAccessStatus(accessCode) {
     let isAuthorized = false;
     let isRevoked = false;
     let authorizedUsername = "User";
+    let planType = "unlimited";
+    let allowedSuburbs = [];
 
     for (let i = 1; i < rows.length; i++) {
         const sheetPassword = rows[i][0] ? rows[i][0].trim() : "";
         const sheetStatus = rows[i][1] ? rows[i][1].trim().toLowerCase() : "";
         const sheetUser = rows[i][2] ? rows[i][2].trim() : "";
+        const sheetPlanType = rows[i][3] ? rows[i][3].trim().toLowerCase() : "unlimited";
+        const sheetSuburbs = rows[i][4] ? rows[i][4].trim() : "";
 
         if (sheetPassword === accessCode) {
             if (sheetStatus === "active") {
                 isAuthorized = true;
                 if (sheetUser) authorizedUsername = sheetUser;
+                planType = sheetPlanType || "unlimited";
+                allowedSuburbs = sheetSuburbs
+                    ? sheetSuburbs.split(';').map(s => s.trim().toUpperCase()).filter(Boolean)
+                    : [];
             } else if (sheetStatus === "revoked") {
                 isRevoked = true;
             }
@@ -45,7 +53,7 @@ async function fetchAccessStatus(accessCode) {
     if (isRevoked) {
         isAuthorized = false;
     }
-    return { isAuthorized, isRevoked, authorizedUsername };
+    return { isAuthorized, isRevoked, authorizedUsername, planType, allowedSuburbs };
 }
 
 function showLoginScreen(message) {
@@ -86,6 +94,8 @@ function startAccessPolling() {
                 setTimeout(() => window.location.reload(), 800);
                 return;
             }
+            ipcRenderer.send('set-plan-data', { planType: status.planType, allowedSuburbs: status.allowedSuburbs });
+            updatePlanBadge(status.planType, status.allowedSuburbs);
         } catch (e) {
             // Fail silently; temporary network issues shouldn't boot the user.
         }
@@ -119,7 +129,7 @@ if (loginBtn) {
         loginError.style.display = 'none';
 
         try {
-            const { isAuthorized, isRevoked, authorizedUsername } = await fetchAccessStatus(enteredPassword);
+            const { isAuthorized, isRevoked, authorizedUsername, planType, allowedSuburbs } = await fetchAccessStatus(enteredPassword);
 
             if (isAuthorized) {
                 // ?? Personalize the Dashboard!
@@ -127,10 +137,13 @@ if (loginBtn) {
                     dashboardTitle.innerText = `Welcome, ${authorizedUsername}`;
                 }
 
+                ipcRenderer.send('set-plan-data', { planType, allowedSuburbs });
+                updatePlanBadge(planType, allowedSuburbs);
+
                 // ?? Trigger the premium unlock animation
                 loginScreen.style.opacity = '0';
-                loginScreen.style.transform = 'translateY(-20px) scale(0.98)'; 
-                
+                loginScreen.style.transform = 'translateY(-20px) scale(0.98)';
+
                 const mainDashboard = document.querySelector('.container');
                 if (mainDashboard) mainDashboard.classList.add('unlocked');
 
@@ -256,8 +269,35 @@ ipcRenderer.on('scrape-finished', () => {
     if (pauseBtn) pauseBtn.classList.add('hidden');
     if (stopBtn) stopBtn.classList.add('hidden');
     if (etaText) etaText.innerText = "ETA: Done";
-    
+
     if (currentProgressHeader) {
         currentProgressHeader.textContent = "Current Progress";
     }
 });
+
+ipcRenderer.on('scrape-error', (event, message) => {
+    const modal = document.getElementById('suburbErrorModal');
+    const allowedEl = document.getElementById('suburb-error-allowed');
+    const blockedEl = document.getElementById('suburb-error-blocked');
+    const okBtn = document.getElementById('suburbErrorOkBtn');
+    if (!modal) return;
+
+    // Split the two-paragraph message from main.js
+    const parts = message.split('\n\n');
+    if (allowedEl) allowedEl.textContent = parts[0] || '';
+    if (blockedEl) blockedEl.textContent = parts[1] || '';
+
+    modal.style.display = 'flex';
+    if (okBtn) okBtn.onclick = () => { modal.style.display = 'none'; };
+});
+
+function updatePlanBadge(planType, allowedSuburbs) {
+    const badge = document.getElementById('plan-badge');
+    if (!badge) return;
+    if (planType === 'limited' && allowedSuburbs && allowedSuburbs.length > 0) {
+        badge.style.display = 'inline-block';
+        badge.textContent = `⚠ Limited · ${allowedSuburbs.length} suburbs`;
+    } else {
+        badge.style.display = 'none';
+    }
+}

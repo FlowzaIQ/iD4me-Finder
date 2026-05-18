@@ -537,6 +537,42 @@
             color: #94A3B8;
         }
         .tour-temp-visible { display: inline-flex !important; }
+
+        /* ── Responsive header: default 900px window ── */
+        @media (max-width: 1080px) {
+            .header {
+                gap: 8px;
+                margin-bottom: 16px;
+                align-items: flex-start;
+            }
+            .header > div {
+                gap: 8px;
+                flex-wrap: wrap;
+                justify-content: flex-end;
+            }
+            .header button {
+                padding: 8px 14px;
+                font-size: 13px;
+                min-width: 0;
+                white-space: nowrap;
+            }
+            .custom-dropdown-trigger {
+                min-width: 105px;
+                height: 36px;
+                font-size: 13px;
+                padding: 0 28px 0 12px;
+            }
+            .header h1 {
+                font-size: 20px;
+            }
+        }
+
+        /* ── Extra safety: push controls to own row below 960px ── */
+        @media (max-width: 960px) {
+            .header > div {
+                width: 100%;
+            }
+        }
     </style>
     <link rel="stylesheet" href="id4me_toolbar.css">
 </head>
@@ -744,6 +780,7 @@
     <div class="header">
         <h1 id="dashboard-title">ID4Me Automation</h1>
         <div style="display: flex; gap: 12px; align-items: center;">
+            <div id="plan-badge" style="display:none; font-size:11px; color:#f59e0b; background:rgba(245,158,11,0.12); border:1px solid rgba(245,158,11,0.4); border-radius:20px; padding:4px 12px; white-space:nowrap; line-height:1.4;"></div>
             <div class="custom-dropdown" id="speedDropdown">
                 <button type="button" class="custom-dropdown-trigger" id="speedDropdownBtn">
                     <span id="speedDropdownLabel">🚶 Normal</span>
@@ -812,6 +849,17 @@
         <ul class="activity-list" id="activity-list">
             <li class="activity-item" style="color: var(--text-muted); font-style: italic;">No activity yet.</li>
         </ul>
+    </div>
+
+    <div class="modal-overlay" id="suburbErrorModal">
+        <div class="modal-content" style="border-color: var(--warning);">
+            <h2 class="modal-title" style="color: var(--warning);">⚠️ Suburb Restriction</h2>
+            <p id="suburb-error-allowed" style="font-size: 14px;"></p>
+            <p id="suburb-error-blocked" style="color: var(--danger); font-weight: 600; font-size: 14px;"></p>
+            <div class="modal-actions">
+                <button id="suburbErrorOkBtn" style="background: var(--warning); color: #fff;">Got It</button>
+            </div>
+        </div>
     </div>
 
     <div class="modal-overlay" id="csvModal">

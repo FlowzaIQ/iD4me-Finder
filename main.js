@@ -98,6 +98,7 @@ let currentBrowser = null;
 let activeAuthServer = null;
 let globalAddressCache = new Map(); // 🧠 ADD THIS LINE (The Memory Bank)
 let globalDncrCache = new Map(); // 🧠 DNCR Memory Bank
+let planData = { planType: 'unlimited', allowedSuburbs: [] };
 let globalSelectedFile = ""; 
 let currentSpeedMode = "normal";
 
@@ -2022,6 +2023,10 @@ ipcMain.on('force-close-windows', async () => {
     currentBrowser = null;
 });
 
+ipcMain.on('set-plan-data', (event, data) => {
+    planData = data;
+});
+
 // 🚀 Main Scraper Logic
 ipcMain.on('start-scrape', async (event, speedMode, isStrictHomeownersOnly, outputMode, dncrEnabled = false, absenteeEnabled = false, headlessEnabled = false, liveSheets = false) => {
   if (isScrapeRunning) {
@@ -2206,7 +2211,22 @@ ipcMain.on('start-scrape', async (event, speedMode, isStrictHomeownersOnly, outp
     }
 
     if (ownersList.length === 0) throw new Error("No valid owners found in this CSV.");
-    
+
+    // Suburb restriction check for limited plan
+    if (planData.planType === 'limited' && planData.allowedSuburbs.length > 0) {
+        const inputSuburbs = [...new Set(rows.map(r => (r[1] || '').trim().toUpperCase()).filter(Boolean))];
+        const blocked = inputSuburbs.filter(s => !planData.allowedSuburbs.includes(s));
+        if (blocked.length > 0) {
+            isScrapeRunning = false;
+            hasProcessedAnyRow = false;
+            event.reply('scrape-finished');
+            event.sender.send('scrape-error',
+                `Your plan only allows searches in: ${planData.allowedSuburbs.join(', ')}.\n\nYour CSV contains restricted suburbs: ${blocked.join(', ')}.`
+            );
+            return;
+        }
+    }
+
     // Set Totals
     stats.total = ownersList.length;
     stats.processed = startIndex;
