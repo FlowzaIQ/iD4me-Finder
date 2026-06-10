@@ -2,6 +2,7 @@ const normalizeLoose = (txt) => (txt || "").toLowerCase().replace(/\s+/g, " ").t
 const MAX_RESULT_COUNT = 35;
 const RESOLVED_STATUS = "POTENTIAL_ABSENTEE";
 const HIGH_FREQ_THRESHOLD = 3; // mobiles appearing this many times or more qualify for multi-row output
+const SAME_STATE_MIN_COUNT = 2; // minimum occurrences for a same-state mobile to be included alongside high-freq out-of-state mobiles
 
 const AU_STATES = ['QLD', 'NSW', 'VIC', 'WA', 'SA', 'TAS', 'ACT', 'NT'];
 
@@ -81,6 +82,24 @@ function getMostCommonAddr(rows, targetMobile) {
     return bestAddr;
 }
 
+// Builds a resolved result from a set of same-state candidates.
+// Returns a single result if only one unique mobile, multipleRows if more than one.
+function resolveFromCandidates(rows, candidateMap, mobileCounts, nameCounts, total) {
+    const uniqueMobiles = [...new Set([...candidateMap.values()].map(e => e.mobile))];
+    if (uniqueMobiles.length === 1) {
+        const best = pickBest(candidateMap, mobileCounts, nameCounts);
+        return { resolved: true, mobile: best.mobile, name: best.name, addr: best.addr || "", landline: best.landline || "", email: best.email || "", lastSeen: best.lastSeen || "", total };
+    }
+    const multipleRows = uniqueMobiles.map(mobile => ({
+        mobile,
+        addr: getMostCommonAddr(rows, mobile),
+        landline: getFirstFieldForMobile(rows, mobile, "landline"),
+        email: getFirstFieldForMobile(rows, mobile, "email"),
+        lastSeen: getFirstFieldForMobile(rows, mobile, "lastSeen"),
+    }));
+    return { resolved: true, multipleRows, total };
+}
+
 // Returns the first non-empty value of a field among rows matching the given mobile.
 function getFirstFieldForMobile(rows, targetMobile, field) {
     for (const row of rows) {
@@ -135,21 +154,34 @@ function evaluateAbsenteeResolution(rows, options) {
 
     // HIGH-FREQUENCY RULE
     // Any mobile appearing >= HIGH_FREQ_THRESHOLD times is considered strongly confirmed.
-    // State filtering is bypassed entirely for these candidates.
-    // 1 qualifier → return it directly. 2+ qualifiers → return all as multipleRows.
+    // If none of the high-freq mobiles are in the property state, same-state mobiles with
+    // count >= SAME_STATE_MIN_COUNT are added alongside them.
     const highFreqMobiles = [...mobileCounts.entries()].filter(([, count]) => count >= HIGH_FREQ_THRESHOLD);
-    if (highFreqMobiles.length === 1) {
-        const [mobile] = highFreqMobiles[0];
-        return {
-            resolved: true, mobile, total,
-            addr: getMostCommonAddr(rows, mobile),
-            landline: getFirstFieldForMobile(rows, mobile, "landline"),
-            email: getFirstFieldForMobile(rows, mobile, "email"),
-            lastSeen: getFirstFieldForMobile(rows, mobile, "lastSeen"),
-        };
-    }
-    if (highFreqMobiles.length >= 2) {
-        const multipleRows = highFreqMobiles.map(([mobile]) => ({
+    if (highFreqMobiles.length >= 1) {
+        const highFreqSet = new Set(highFreqMobiles.map(([m]) => m));
+        const highFreqStates = new Set(highFreqMobiles.map(([m]) => extractState(getMostCommonAddr(rows, m))));
+        let extraMobiles = [];
+        if (propertyState && !highFreqStates.has(propertyState)) {
+            const sameStateMobileSet = new Set();
+            for (const entry of groupCounts.values()) {
+                if (extractState(entry.addr) === propertyState) sameStateMobileSet.add(entry.mobile);
+            }
+            extraMobiles = [...sameStateMobileSet].filter(
+                m => !highFreqSet.has(m) && (mobileCounts.get(m) || 0) >= SAME_STATE_MIN_COUNT
+            );
+        }
+        const allMobiles = [...highFreqMobiles.map(([m]) => m), ...extraMobiles];
+        if (allMobiles.length === 1) {
+            const mobile = allMobiles[0];
+            return {
+                resolved: true, mobile, total,
+                addr: getMostCommonAddr(rows, mobile),
+                landline: getFirstFieldForMobile(rows, mobile, "landline"),
+                email: getFirstFieldForMobile(rows, mobile, "email"),
+                lastSeen: getFirstFieldForMobile(rows, mobile, "lastSeen"),
+            };
+        }
+        const multipleRows = allMobiles.map(mobile => ({
             mobile,
             addr: getMostCommonAddr(rows, mobile),
             landline: getFirstFieldForMobile(rows, mobile, "landline"),
@@ -159,13 +191,22 @@ function evaluateAbsenteeResolution(rows, options) {
         return { resolved: true, multipleRows, total };
     }
 
-    // Case: ≤5 total results — too few to be ambiguous, use best-pick regardless of state.
+    // Case: ≤5 total results — apply state filtering first, fall back to best-pick.
     if (total <= 5) {
+        if (propertyState) {
+            const sameStateCandidates = new Map();
+            for (const [key, entry] of groupCounts.entries()) {
+                if (extractState(entry.addr) === propertyState) sameStateCandidates.set(key, entry);
+            }
+            if (sameStateCandidates.size > 0) {
+                return resolveFromCandidates(rows, sameStateCandidates, mobileCounts, nameCounts, total);
+            }
+        }
         const best = pickBest(groupCounts, mobileCounts, nameCounts);
         return { resolved: true, mobile: best.mobile, name: best.name, addr: best.addr || "", landline: best.landline || "", email: best.email || "", lastSeen: best.lastSeen || "", total };
     }
 
-    // Cases for 6–20 results: apply same-state prioritisation when property state is known.
+    // Cases for 6+ results: apply same-state prioritisation when property state is known.
     if (propertyState) {
         const sameStateCandidates = new Map();
         for (const [key, entry] of groupCounts.entries()) {
@@ -175,9 +216,7 @@ function evaluateAbsenteeResolution(rows, options) {
         }
 
         if (sameStateCandidates.size > 0) {
-            // Same-state results exist — pick the best one, ignore interstate entirely.
-            const best = pickBest(sameStateCandidates, mobileCounts, nameCounts);
-            return { resolved: true, mobile: best.mobile, name: best.name, addr: best.addr || "", landline: best.landline || "", email: best.email || "", lastSeen: best.lastSeen || "", total };
+            return resolveFromCandidates(rows, sameStateCandidates, mobileCounts, nameCounts, total);
         }
 
         // No same-state results found.

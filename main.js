@@ -10,6 +10,7 @@ const { stringify } = require("csv-stringify/sync");
 const { generateNameVariations, evaluateAbsenteeResolution, MAX_RESULT_COUNT, RESOLVED_STATUS } = require("./absentee_utils");
 const { isNetworkFailure } = require("./network_utils");
 const { normalizeDateString } = require("./date_utils");
+const rex = require("./rex_integration");
 
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 const genAI = new GoogleGenerativeAI("AIzaSyCwUrMmVTZ9rzDQZvDtbIGbLYAtEkx5A6g"); // 🔴 Paste your key here!
@@ -1039,7 +1040,8 @@ async function getRows(page, retryCount = 0) {
 
                 if (!name) continue;
 
-                const key = `${normalizeLoose(name)}|${normalizeLoose(addr)}|${normalizePhone(mobile)}|${normalizePhone(landline)}|${normalizeLoose(email)}`;
+                const lastSeenKey = lastSeen || `_row_${i}_${j}`;
+                const key = `${normalizeLoose(name)}|${normalizeLoose(addr)}|${normalizePhone(mobile)}|${normalizePhone(landline)}|${normalizeLoose(email)}|${normalizeLoose(lastSeenKey)}`;
                 if (!seen.has(key)) {
                     seen.add(key);
                     out.push({ name, addr, mobile, allMobiles, email, landline, allLandlines, lastSeen });
@@ -1093,7 +1095,8 @@ async function getRows(page, retryCount = 0) {
             const landline = allLandlines[0] || "";
             const lastSeen = await cells.nth(9).innerText({ timeout: 500 }).catch(() => "");
             if (!name) continue;
-            const key = `${normalizeLoose(name)}|${normalizeLoose(addr)}|${normalizePhone(mobile)}|${normalizePhone(landline)}|${normalizeLoose(email)}`;
+            const lastSeenKey = lastSeen || `_row_final_${j}`;
+            const key = `${normalizeLoose(name)}|${normalizeLoose(addr)}|${normalizePhone(mobile)}|${normalizePhone(landline)}|${normalizeLoose(email)}|${normalizeLoose(lastSeenKey)}`;
             if (!seen.has(key)) { seen.add(key); out.push({ name, addr, mobile, allMobiles, email, landline, allLandlines, lastSeen }); }
         } catch (e) {}
     }
@@ -1354,13 +1357,14 @@ async function addressScan(page, address, postcode, ownerName, suburb, coOwners 
     } else {
         // We haven't seen this address yet. Use the browser to search it.
         await clearSearch(page);
-        await addFirstChip(page, suburb ? `${address} ${suburb}` : address);
-        
+        const suburbDisplay = suburb ? suburb.split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ') : '';
+        await addFirstChip(page, suburbDisplay ? `${address} ${suburbDisplay}` : address);
+
         updateStatus(`Waiting for ID4Me to load ${address}...`, true);
         // 🚀 SPEED OPTIMIZATION: State-based wait instead of hardcoded 1.5s
         await page.waitForSelector('.MuiDataGrid-row, div[role="row"]', { state: 'attached', timeout: isFastMode() ? 3000 : 5000 }).catch(() => {});
         await page.waitForTimeout(isFastMode() ? 100 : 300); // Tiny buffer for DOM to settle
-        
+
         // 📜 NEW ROBUST SCROLL: Harvest all names using Playwright's native tools
         updateStatus(`Scraping all residents for ${ownerName}...`, true);
         const rowsResult = await getRows(page); // Use the reliable getRows function
@@ -1525,7 +1529,8 @@ async function addressScanGrouped(page, address, postcode, ownerNames, suburb, c
         // race condition where ensureLoggedIn ran before the UI finished rendering.
         await ensureNormalSearch(page);
         await clearSearch(page);
-        await addFirstChip(page, suburb ? `${address} ${suburb}` : address);
+        const suburbDisplay = suburb ? suburb.split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ') : '';
+        await addFirstChip(page, suburbDisplay ? `${address} ${suburbDisplay}` : address);
 
         updateStatus(`Waiting for ID4Me to load ${address}...`, true);
         await page.waitForSelector('.MuiDataGrid-row, div[role="row"]', { state: 'attached', timeout: isFastMode() ? 3000 : 5000 }).catch(() => {});
@@ -1838,6 +1843,7 @@ function createWindow() {
 
 app.whenReady().then(() => {
   createWindow();
+  attachRexCloseGuard();
   autoUpdater.checkForUpdates();
 });
 
@@ -1854,6 +1860,36 @@ autoUpdater.on('update-downloaded', () => {
 });
 
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
+
+// Rex CRM — intercept window close if there's buffered data to push
+function attachRexCloseGuard() {
+    if (!mainWindow) return;
+    mainWindow.on('close', async (event) => {
+        const crmCfg = (() => {
+            try { return fs.existsSync(CRM_FILE) ? JSON.parse(fs.readFileSync(CRM_FILE, 'utf8')) : {}; } catch { return {}; }
+        })();
+        if (crmCfg.mode !== 'rex' || !rex.hasPendingData()) return;
+
+        event.preventDefault(); // keep window open while we push
+
+        const total = rex.hasPendingData();
+        mainWindow.webContents.send('rex-push-start', { total: typeof total === 'number' ? total : 0 });
+
+        try {
+            const token = await rex.initRexSession(crmCfg.rexEmail || '', crmCfg.rexPassword || '');
+            if (token) {
+                await rex.flushPendingSync(token, (done, t) => {
+                    mainWindow.webContents.send('rex-push-progress', { done, total: t });
+                }, addActivity);
+            }
+        } catch (e) {
+            console.error('Rex flush on close failed:', e.message);
+        }
+
+        mainWindow.webContents.send('rex-push-done');
+        setTimeout(() => mainWindow.destroy(), 2600); // let "complete" message show briefly
+    });
+}
 app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 
 // 📂 Opens the output folder
@@ -2046,6 +2082,7 @@ ipcMain.on('start-scrape', async (event, speedMode, isStrictHomeownersOnly, outp
   let sheetsHighWaterMark = -1; // highest ownersList index confirmed written to the sheet
   isScrapeRunning = true;
   hasProcessedAnyRow = false;
+  let rexToken = null;
   const seenRelativesByAddress = new Map();
   try {
     // 1. APPLY SPEED SETTINGS
@@ -2074,6 +2111,21 @@ ipcMain.on('start-scrape', async (event, speedMode, isStrictHomeownersOnly, outp
     isGlobalStopped = false; 
     globalAddressCache.clear(); // 🧠 ADD THIS LINE (Wipes memory for the new file)
     globalDncrCache.clear(); // 🧠 Wipes DNCR memory
+
+    // Rex CRM — login once per run if Rex mode is active
+    if (outputMode === 'rex') {
+        try {
+            const crmCfg = fs.existsSync(CRM_FILE) ? JSON.parse(fs.readFileSync(CRM_FILE, 'utf8')) : {};
+            rexToken = await rex.initRexSession(crmCfg.rexEmail || '', crmCfg.rexPassword || '');
+            if (rexToken) {
+                addActivity("Rex CRM connected. Data will be pushed in real-time.", 'success');
+            } else {
+                addActivity("⚠️ Rex CRM login failed — check credentials in Output Destination settings. Continuing in CSV-only mode.", 'warning');
+            }
+        } catch (e) {
+            addActivity(`⚠️ Rex CRM login error: ${e.message}. Continuing in CSV-only mode.`, 'warning');
+        }
+    }
     
     sendStats();
     updateProgress();
@@ -2475,6 +2527,22 @@ ipcMain.on('start-scrape', async (event, speedMode, isStrictHomeownersOnly, outp
                 const absenteeRow = [ownerName, address, RESOLVED_STATUS, ownerName, match.mobile || "N/A", absenteeDncr, match.landline || "N/A", match.email || "N/A", match.lastSeen || "N/A", lastSoldDate || "N/A"];
                 if (absenteeEnabled) absenteeRow.push(match.absenteeAddr);
                 writeRow(absenteeRow);
+
+                // Rex CRM — push absentee owner in real-time
+                if (outputMode === 'rex' && rexToken && match.mobile && match.mobile !== 'N/A') {
+                    rex.pushToRex({
+                        matchStatus:  'POTENTIAL_ABSENTEE',
+                        foundName:    ownerName,
+                        foundMobile:  match.mobile,
+                        foundLandline: match.landline || '',
+                        foundEmail:   match.email || '',
+                        originalAddress: address,
+                        suburb:       record.row[1] || '',
+                        state:        record.row[2] || '',
+                        postcode:     record.row[3] || '',
+                        absenteeAddr: match.absenteeAddr || '',
+                    });
+                }
             }
         }
 
@@ -2551,12 +2619,27 @@ ipcMain.on('start-scrape', async (event, speedMode, isStrictHomeownersOnly, outp
                     }
                 }
             } else {
-                // 📄 Standard Spreadsheet Mode
+                // 📄 Standard Spreadsheet Mode (also used when Rex mode is active)
                 addActivity(`${ownerName} - Found (${finalPeopleToWrite.length} matches)`, 'success');
                 for (const person of finalPeopleToWrite) {
                     const personRow = [ownerName, address, person.Status, person.Name, person.Mobile, person.DNCR || "N/A", person.Landline, person.Email, person.Last_Seen, lastSoldDate || "N/A"];
                     if (absenteeEnabled) personRow.push("");
                     writeRow(personRow);
+
+                    // Rex CRM — push qualifying homeowners in real-time
+                    if (outputMode === 'rex' && rexToken && person.Status === 'HOMEOWNER' && person.Mobile && person.Mobile !== 'N/A') {
+                        rex.pushToRex({
+                            matchStatus:  'HOMEOWNER',
+                            foundName:    person.Name,
+                            foundMobile:  person.Mobile,
+                            foundLandline: person.Landline || '',
+                            foundEmail:   person.Email || '',
+                            originalAddress: address,
+                            suburb:       record.row[1] || '',
+                            state:        record.row[2] || '',
+                            postcode:     record.row[3] || '',
+                        });
+                    }
                 }
             }
 
@@ -2715,6 +2798,25 @@ ipcMain.on('start-scrape', async (event, speedMode, isStrictHomeownersOnly, outp
     currentBrowser = null;
     isScrapeRunning = false;
     hasProcessedAnyRow = false;
+
+    // Rex CRM — flush buffered rows and sync ownership
+    if (outputMode === 'rex' && rexToken) {
+        try {
+            const pending = rex.hasPendingData();
+            if (mainWindow && !mainWindow.isDestroyed())
+                mainWindow.webContents.send('rex-push-start', { total: pending });
+            await rex.flushPendingSync(rexToken, (done, total) => {
+                if (mainWindow && !mainWindow.isDestroyed())
+                    mainWindow.webContents.send('rex-push-progress', { done, total });
+            }, addActivity);
+            if (mainWindow && !mainWindow.isDestroyed())
+                mainWindow.webContents.send('rex-push-done');
+        } catch (e) {
+            console.error('Rex ownership sync failed:', e.message);
+        }
+    }
+
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.focus();
     event.reply('scrape-finished');
 
   } catch (error) {
@@ -2741,6 +2843,22 @@ ipcMain.on('start-scrape', async (event, speedMode, isStrictHomeownersOnly, outp
     if (browser && browser.isConnected()) await browser.close();
     isScrapeRunning = false;
     hasProcessedAnyRow = false;
+
+    // Rex CRM — still flush buffered data even on fatal error
+    if (outputMode === 'rex' && rexToken) {
+        try {
+            if (mainWindow && !mainWindow.isDestroyed())
+                mainWindow.webContents.send('rex-push-start', { total: rex.hasPendingData() });
+            await rex.flushPendingSync(rexToken, (done, total) => {
+                if (mainWindow && !mainWindow.isDestroyed())
+                    mainWindow.webContents.send('rex-push-progress', { done, total });
+            }, addActivity);
+            if (mainWindow && !mainWindow.isDestroyed())
+                mainWindow.webContents.send('rex-push-done');
+        } catch (e) {}
+    }
+
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.focus();
     event.reply('scrape-finished');
   }
 });

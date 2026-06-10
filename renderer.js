@@ -16,7 +16,6 @@ const SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vRdnjrT5j
 
 let currentAccessCode = "";
 let isAuthorizedUser = false;
-let accessPollTimer = null;
 
 async function fetchAccessStatus(accessCode) {
     const response = await fetch(SHEET_CSV_URL);
@@ -75,32 +74,6 @@ function showLoginScreen(message) {
     }
 }
 
-function startAccessPolling() {
-    if (accessPollTimer) clearInterval(accessPollTimer);
-    accessPollTimer = setInterval(async () => {
-        if (!isAuthorizedUser || !currentAccessCode) return;
-        try {
-            const status = await fetchAccessStatus(currentAccessCode);
-            if (status.isRevoked || !status.isAuthorized) {
-                isAuthorizedUser = false;
-                currentAccessCode = "";
-                ipcRenderer.send('force-close-windows');
-                ipcRenderer.send('stop-scrape');
-                showLoginScreen("? Access revoked. Please contact management.");
-                if (accessPollTimer) {
-                    clearInterval(accessPollTimer);
-                    accessPollTimer = null;
-                }
-                setTimeout(() => window.location.reload(), 800);
-                return;
-            }
-            ipcRenderer.send('set-plan-data', { planType: status.planType, allowedSuburbs: status.allowedSuburbs });
-            updatePlanBadge(status.planType, status.allowedSuburbs);
-        } catch (e) {
-            // Fail silently; temporary network issues shouldn't boot the user.
-        }
-    }, 60000);
-}
 
 // Password Visibility Toggle
 if (togglePasswordBtn && passwordInput) {
@@ -150,7 +123,6 @@ if (loginBtn) {
                 setTimeout(() => { loginScreen.style.display = 'none'; }, 500);
                 currentAccessCode = enteredPassword;
                 isAuthorizedUser = true;
-                startAccessPolling();
             } else if (isRevoked) {
                 loginError.innerText = "? Access revoked. Please contact management.";
                 loginError.style.display = 'block';
