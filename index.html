@@ -670,6 +670,16 @@
                 <input type="password" id="rex-password-input" placeholder="Rex password"
                     style="width: 100%; padding: 12px; margin-bottom: 8px; border: 1px solid #D1D5DB; border-radius: 6px; outline: none; box-sizing: border-box; font-size: 14px;">
                 <p style="font-size: 12px; color: #6B7280; margin: 0 0 12px 0;">Credentials are stored locally on this device only.</p>
+
+                <div id="rex-dncr-filter-row" style="display: none; align-items: center; justify-content: space-between; padding: 10px 12px; background: #F8FAFC; border: 1px solid #E2E8F0; border-radius: 8px; margin-bottom: 12px;">
+                    <div>
+                        <div style="font-size: 13px; font-weight: 600; color: #1f2937;">Filter DNCR Blocked Numbers</div>
+                        <div style="font-size: 11px; color: #6B7280; margin-top: 2px;">Only push clean, unblocked numbers to Rex</div>
+                    </div>
+                    <button type="button" id="rex-dncr-filter-toggle" style="display: flex; align-items: center; gap: 6px; background: none; border: none; cursor: pointer; font-size: 12px; font-weight: 700; color: #9CA3AF; padding: 4px 8px; border-radius: 6px; transition: all 0.15s;">
+                        <span id="rex-dncr-filter-state">OFF</span>
+                    </button>
+                </div>
             </div>
             
             <div style="display: flex; justify-content: space-between; margin-top: 8px;">
@@ -975,6 +985,10 @@
                 const rexCredentialsContainer = document.getElementById('rex-credentials-container');
                 const rexEmailInput           = document.getElementById('rex-email-input');
                 const rexPasswordInput        = document.getElementById('rex-password-input');
+                const rexDncrFilterRow        = document.getElementById('rex-dncr-filter-row');
+                const rexDncrFilterToggle     = document.getElementById('rex-dncr-filter-toggle');
+                const rexDncrFilterState      = document.getElementById('rex-dncr-filter-state');
+                let isRexDncrFilterEnabled    = false;
                 const saveSessionModal = document.getElementById('save-session-modal');
                 const saveSessionBtn = document.getElementById('save-session-btn');
                 const discardSessionBtn = document.getElementById('discard-session-btn');
@@ -1123,7 +1137,9 @@
 
                 // --- 🎯 CRM SETTINGS LOGIC ---
                 const updateCrmUI = () => {
-                    rexCredentialsContainer.style.display = outputModeSelect.value === 'rex' ? 'block' : 'none';
+                    const isRex = outputModeSelect.value === 'rex';
+                    rexCredentialsContainer.style.display = isRex ? 'block' : 'none';
+                    if (rexDncrFilterRow) rexDncrFilterRow.style.display = (isRex && isDncrEnabled) ? 'flex' : 'none';
                 };
 
                 outputModeSelect.addEventListener('change', updateCrmUI);
@@ -1135,6 +1151,11 @@
                         outputModeSelect.value  = settings.mode || 'csv';
                         rexEmailInput.value     = settings.rexEmail    || '';
                         rexPasswordInput.value  = settings.rexPassword || '';
+                        isRexDncrFilterEnabled  = settings.rexFilterDncr || false;
+                        if (rexDncrFilterState) {
+                            rexDncrFilterState.innerText = isRexDncrFilterEnabled ? 'ON' : 'OFF';
+                            rexDncrFilterToggle.style.color = isRexDncrFilterEnabled ? '#2563EB' : '#9CA3AF';
+                        }
                         updateCrmUI();
                     } catch (error) {}
                 });
@@ -1143,12 +1164,21 @@
 
                 saveCrmBtn.addEventListener('click', () => {
                     ipcRenderer.send('save-crm-settings', {
-                        mode:        outputModeSelect.value,
-                        rexEmail:    rexEmailInput.value.trim(),
-                        rexPassword: rexPasswordInput.value,
+                        mode:          outputModeSelect.value,
+                        rexEmail:      rexEmailInput.value.trim(),
+                        rexPassword:   rexPasswordInput.value,
+                        rexFilterDncr: isRexDncrFilterEnabled,
                     });
                     crmModal.style.display = 'none';
                 });
+
+                if (rexDncrFilterToggle) {
+                    rexDncrFilterToggle.addEventListener('click', () => {
+                        isRexDncrFilterEnabled = !isRexDncrFilterEnabled;
+                        rexDncrFilterState.innerText = isRexDncrFilterEnabled ? 'ON' : 'OFF';
+                        rexDncrFilterToggle.style.color = isRexDncrFilterEnabled ? '#2563EB' : '#9CA3AF';
+                    });
+                }
 
                 let isDncrEnabled = false;
                 let isAbsenteeEnabled = false;
@@ -1200,6 +1230,7 @@
                         isDncrEnabled = !isDncrEnabled;
                         setToggleState(settingsDncrToggle, settingsDncrState, isDncrEnabled);
                         saveUISettings();
+                        updateCrmUI();
                     });
                 }
 
@@ -1415,7 +1446,8 @@
 
                     const currentSpeed = speedSelect.value;
                     // Pass the new outputMode variable to main.js!
-                    ipcRenderer.send('start-scrape', currentSpeed, isStrictHomeownersOnly, outputMode, isDncrEnabled, isAbsenteeEnabled, isHeadlessEnabled, isLiveSheetsEnabled);
+                    const rexDncrFilter = (crmSettings.rexFilterDncr && isDncrEnabled) || false;
+                    ipcRenderer.send('start-scrape', currentSpeed, isStrictHomeownersOnly, outputMode, isDncrEnabled, isAbsenteeEnabled, isHeadlessEnabled, isLiveSheetsEnabled, rexDncrFilter);
                 };
 
                 // --- ⏸️ PAUSE & 🛑 STOP BUTTON LOGIC ---

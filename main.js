@@ -1218,18 +1218,19 @@ async function enrichPeopleWithDncr(page, people) {
                       // Try up to 3 hover attempts with move-away-and-back between each
                       for (let hoverAttempt = 1; hoverAttempt <= 3 && status === "unknown"; hoverAttempt++) {
                           try {
-                              // Move away first to reset any lingering tooltip state
-                              await page.mouse.move(0, 0).catch(() => {});
-                              await page.waitForTimeout(150);
-
                               const iconButton = icon.locator('xpath=ancestor::button[1]');
                               const hoverTarget = (await iconButton.count()) > 0 ? iconButton : icon;
 
-                              await hoverTarget.hover({ timeout: 1500 });
-                              const box = await hoverTarget.boundingBox().catch(() => null);
-                              if (box) {
-                                  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2).catch(() => {});
-                              }
+                              // Dispatch JS mouse events directly — works even when window is minimised
+                              await hoverTarget.evaluate(el => {
+                                  el.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true, cancelable: true }));
+                                  el.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, cancelable: true }));
+                                  el.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, cancelable: true }));
+                                  el.focus();
+                              }).catch(() => {});
+
+                              // Also try Playwright hover as fallback (works when window is visible)
+                              await hoverTarget.hover({ timeout: 1500, force: true }).catch(() => {});
                           } catch (interactionError) {
                               addActivity(`Hover attempt ${hoverAttempt} failed for ${person.Name} — skipping attempt.`, 'warning');
                           }
@@ -2064,7 +2065,7 @@ ipcMain.on('set-plan-data', (event, data) => {
 });
 
 // 🚀 Main Scraper Logic
-ipcMain.on('start-scrape', async (event, speedMode, isStrictHomeownersOnly, outputMode, dncrEnabled = false, absenteeEnabled = false, headlessEnabled = false, liveSheets = false) => {
+ipcMain.on('start-scrape', async (event, speedMode, isStrictHomeownersOnly, outputMode, dncrEnabled = false, absenteeEnabled = false, headlessEnabled = false, liveSheets = false, rexFilterDncr = false) => {
   if (isScrapeRunning) {
       updateStatus("A run is already in progress.", false);
       return;
@@ -2529,7 +2530,9 @@ ipcMain.on('start-scrape', async (event, speedMode, isStrictHomeownersOnly, outp
                 writeRow(absenteeRow);
 
                 // Rex CRM — push absentee owner in real-time
-                if (outputMode === 'rex' && rexToken && match.mobile && match.mobile !== 'N/A') {
+                const absenteeDncrStatus = (absenteeDncr || '').toLowerCase();
+                const absenteeBlockedByDncr = rexFilterDncr && (absenteeDncrStatus === 'blocked' || absenteeDncrStatus === 'unknown' || absenteeDncrStatus === 'detector failed' || !match.mobile || match.mobile === 'N/A');
+                if (outputMode === 'rex' && rexToken && match.mobile && match.mobile !== 'N/A' && !absenteeBlockedByDncr) {
                     rex.pushToRex({
                         matchStatus:  'POTENTIAL_ABSENTEE',
                         foundName:    ownerName,
@@ -2627,7 +2630,9 @@ ipcMain.on('start-scrape', async (event, speedMode, isStrictHomeownersOnly, outp
                     writeRow(personRow);
 
                     // Rex CRM — push qualifying homeowners in real-time
-                    if (outputMode === 'rex' && rexToken && person.Status === 'HOMEOWNER' && person.Mobile && person.Mobile !== 'N/A') {
+                    const personDncrStatus = (person.DNCR || '').toLowerCase();
+                    const personBlockedByDncr = rexFilterDncr && (personDncrStatus === 'blocked' || personDncrStatus === 'unknown' || personDncrStatus === 'detector failed' || !person.Mobile || person.Mobile === 'N/A');
+                    if (outputMode === 'rex' && rexToken && person.Status === 'HOMEOWNER' && person.Mobile && person.Mobile !== 'N/A' && !personBlockedByDncr) {
                         rex.pushToRex({
                             matchStatus:  'HOMEOWNER',
                             foundName:    person.Name,
