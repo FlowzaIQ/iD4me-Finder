@@ -12,47 +12,55 @@ const dashboardTitle = document.getElementById('dashboard-title'); // Grabs the 
 const defaultDashboardTitle = dashboardTitle ? dashboardTitle.innerText : "";
 
 // ?? PASTE YOUR GOOGLE SHEET CSV LINK INSIDE THESE QUOTES:
-const SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vRdnjrT5j7dH4Q6L-SliHCBoXeA4WgxCHHQtGe55G_uLWb1v8x5lT1v_PtKku4hgK1kh-VKrTwUAroX/pub?output=csv"; 
+const SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vRdnjrT5j7dH4Q6L-SliHCBoXeA4WgxCHHQtGe55G_uLWb1v8x5lT1v_PtKku4hgK1kh-VKrTwUAroX/pub?output=csv";
+
+// ?? AGENCY SHEETS — add client CSV export URLs here when setting up new agencies:
+const AGENCY_SHEET_URLS = [
+    "https://docs.google.com/spreadsheets/d/1N1gk9zxOlufd4p8hEPaitws45MnR5a1LZxIaKkA5wEw/export?format=csv&gid=0"
+];
 
 let currentAccessCode = "";
 let isAuthorizedUser = false;
 
-async function fetchAccessStatus(accessCode) {
-    const response = await fetch(SHEET_CSV_URL);
-    const csvText = await response.text();
+function parseSheetForCode(csvText, accessCode) {
     const rows = csvText.split('\n').map(row => row.split(','));
-
-    let isAuthorized = false;
-    let isRevoked = false;
-    let authorizedUsername = "User";
-    let planType = "unlimited";
-    let allowedSuburbs = [];
-
     for (let i = 1; i < rows.length; i++) {
         const sheetPassword = rows[i][0] ? rows[i][0].trim() : "";
+        if (sheetPassword !== accessCode) continue;
         const sheetStatus = rows[i][1] ? rows[i][1].trim().toLowerCase() : "";
         const sheetUser = rows[i][2] ? rows[i][2].trim() : "";
         const sheetPlanType = rows[i][3] ? rows[i][3].trim().toLowerCase() : "unlimited";
         const sheetSuburbs = rows[i][4] ? rows[i][4].trim() : "";
+        return {
+            found: true,
+            isAuthorized: sheetStatus === "active",
+            isRevoked: sheetStatus === "revoked",
+            authorizedUsername: sheetUser || "User",
+            planType: sheetPlanType || "unlimited",
+            allowedSuburbs: sheetSuburbs ? sheetSuburbs.split(';').map(s => s.trim().toUpperCase()).filter(Boolean) : []
+        };
+    }
+    return { found: false };
+}
 
-        if (sheetPassword === accessCode) {
-            if (sheetStatus === "active") {
-                isAuthorized = true;
-                if (sheetUser) authorizedUsername = sheetUser;
-                planType = sheetPlanType || "unlimited";
-                allowedSuburbs = sheetSuburbs
-                    ? sheetSuburbs.split(';').map(s => s.trim().toUpperCase()).filter(Boolean)
-                    : [];
-            } else if (sheetStatus === "revoked") {
-                isRevoked = true;
-            }
+async function fetchAccessStatus(accessCode) {
+    // Master sheet takes full priority
+    const masterResponse = await fetch(SHEET_CSV_URL);
+    const masterResult = parseSheetForCode(await masterResponse.text(), accessCode);
+    if (masterResult.found) {
+        return { isAuthorized: masterResult.isAuthorized, isRevoked: masterResult.isRevoked, authorizedUsername: masterResult.authorizedUsername, planType: masterResult.planType, allowedSuburbs: masterResult.allowedSuburbs };
+    }
+
+    // Fall through to agency sheets if not found in master
+    for (const agencyUrl of AGENCY_SHEET_URLS) {
+        const agencyResponse = await fetch(agencyUrl);
+        const agencyResult = parseSheetForCode(await agencyResponse.text(), accessCode);
+        if (agencyResult.found) {
+            return { isAuthorized: agencyResult.isAuthorized, isRevoked: agencyResult.isRevoked, authorizedUsername: agencyResult.authorizedUsername, planType: agencyResult.planType, allowedSuburbs: agencyResult.allowedSuburbs };
         }
     }
 
-    if (isRevoked) {
-        isAuthorized = false;
-    }
-    return { isAuthorized, isRevoked, authorizedUsername, planType, allowedSuburbs };
+    return { isAuthorized: false, isRevoked: false, authorizedUsername: "User", planType: "unlimited", allowedSuburbs: [] };
 }
 
 function showLoginScreen(message) {

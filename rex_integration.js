@@ -105,7 +105,8 @@ function formatAbsenteeAddress(raw) {
 // ─── Find or create property in Rex ──────────────────────────────────────────
 async function findOrCreateProperty(originalAddress, suburb, state, postcode, token) {
     const { unit, number, name, type } = parseAddressComponents(originalAddress);
-    const cacheKey = `${unit}|${number}|${name}|${(suburb || "").toUpperCase()}`;
+    const fullStreetName = [name, type].filter(Boolean).join(" ");
+    const cacheKey = `${unit}|${number}|${fullStreetName}|${(suburb || "").toUpperCase()}`;
 
     if (_propertyCache.has(cacheKey)) return _propertyCache.get(cacheKey);
 
@@ -129,20 +130,21 @@ async function findOrCreateProperty(originalAddress, suburb, state, postcode, to
         if (unit) {
             // Unit address — must match BOTH street name AND unit number exactly
             // Never fall back to a different unit — each unit is a separate property
-            const match = rows.find(r =>
-                (r.adr_street_name || "").toLowerCase() === name.toLowerCase() &&
-                String(r.adr_unit_number || "") === String(unit)
-            );
+            const match = rows.find(r => {
+                const rFull = [(r.adr_street_name || ""), (r.adr_street_type || "")].filter(Boolean).join(" ").toLowerCase();
+                return rFull === fullStreetName.toLowerCase() && String(r.adr_unit_number || "") === String(unit);
+            });
             if (match) {
                 _propertyCache.set(cacheKey, match.id);
                 return match.id;
             }
             // No exact unit match found — fall through to create a new property
         } else {
-            // Standard address — match by street name only
-            const match = rows.find(r =>
-                (r.adr_street_name || "").toLowerCase() === name.toLowerCase()
-            ) || rows[0];
+            // Standard address — must match street name+type exactly; never fall back to a different street
+            const match = rows.find(r => {
+                const rFull = [(r.adr_street_name || ""), (r.adr_street_type || "")].filter(Boolean).join(" ").toLowerCase();
+                return rFull === fullStreetName.toLowerCase();
+            });
             if (match) {
                 _propertyCache.set(cacheKey, match.id);
                 return match.id;
@@ -153,13 +155,12 @@ async function findOrCreateProperty(originalAddress, suburb, state, postcode, to
     // Create new property
     const createData = {
         property_category_id: "residential",
-        adr_unit_number:      unit     || undefined,
+        adr_unit_number:      unit           || undefined,
         adr_street_number:    number,
-        adr_street_name:      name     || undefined,
-        adr_street_type:      type     || undefined,
-        adr_suburb_or_town:   suburb   || undefined,
-        adr_state_or_region:  state    || undefined,
-        adr_postcode:         postcode || undefined,
+        adr_street_name:      fullStreetName || undefined,
+        adr_suburb_or_town:   suburb         || undefined,
+        adr_state_or_region:  state          || undefined,
+        adr_postcode:         postcode       || undefined,
         adr_country:          "AU",
     };
     Object.keys(createData).forEach(k => createData[k] === undefined && delete createData[k]);
