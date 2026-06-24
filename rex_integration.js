@@ -22,6 +22,7 @@ function isBannedName(name) {
 let _propertyCache  = new Map();  // "number|name|suburb" → Rex property ID
 let _pendingSync    = new Map();  // address string → { propertyId, newFirstNames: Set }
 let _rowBuffer      = [];         // rows collected during scrape, pushed to Rex after run ends
+let _notedKeys      = new Set();  // "contactId|propertyId" already given a note this run (dedupe)
 
 // ─── HTTP helper ──────────────────────────────────────────────────────────────
 const REX_TIMEOUT_MS = 30000; // 30 seconds — gives Rex plenty of time to respond
@@ -453,11 +454,35 @@ async function syncOwnership(propertyId, newFirstNames, prevOwners, token) {
     }
 }
 
+// ─── Add a "Scraped via ID4Me" note to the contact (and the property they own) ─
+// Confirmed shape via /notes/describe: notes attach through
+//   _related.note_contacts[].contact_id  and  _related.note_properties[].property_id
+async function addScrapedNote(contactId, token, propertyId = null) {
+    const related = { note_contacts: [{ contact_id: contactId }] };
+    if (propertyId) related.note_properties = [{ property_id: propertyId }];
+
+    // Datestamp (AU format DD/MM/YYYY) so repeat scrapes are distinguishable, not duplicate spam.
+    const today = new Date().toLocaleDateString("en-AU", { day: "2-digit", month: "2-digit", year: "numeric" });
+
+    const res = await rexPost("/notes/create", {
+        data: {
+            note: `Scraped via ID4Me — ${today}`,
+            _related: related,
+            update_last_contacted: false,
+        }
+    }, token);
+
+    if (res.status !== 200 || res.body?.error) {
+        console.error(`addScrapedNote failed for contact ${contactId}:`, JSON.stringify(res.body?.error));
+    }
+}
+
 // ─── Public: Initialise Rex session ──────────────────────────────────────────
 async function initRexSession(email, password) {
     _propertyCache.clear();
     _pendingSync.clear();
     _rowBuffer = [];
+    _notedKeys.clear();
 
     const loginRes = await rexPost("/Authentication/login", { email, password });
     if (loginRes.status !== 200 || typeof loginRes.body?.result !== "string") {
@@ -537,7 +562,17 @@ async function _pushToRexNow(rowData, token, onLog = null) {
     await linkContactToProperty(contactId, propertyId, token);
     log(`Linked contact ${contactId} → property ${propertyId} as owner`);
 
-    // 4. Track for ownership sync (keyed by original address string)
+    // 4. Add "Scraped via ID4Me" note to the contact and the property they own.
+    //    Dedup on a STABLE identity (owner name + property), NOT contactId — Rex search
+    //    indexing lag can hand back a different contactId for each of a person's phone/email
+    //    rows in the same run, which would slip past a contactId-based guard and spam notes.
+    const noteKey = `${(foundName || "").trim().toLowerCase()}|${propertyId}`;
+    if (!_notedKeys.has(noteKey)) {
+        _notedKeys.add(noteKey);
+        await addScrapedNote(contactId, token, propertyId);
+    }
+
+    // 5. Track for ownership sync (keyed by original address string)
     if (!_pendingSync.has(originalAddress)) {
         const prevOwners = await fetchExistingOwners(propertyId, token);
         log(`Snapshotted ${prevOwners.length} existing owner(s) for "${originalAddress}"`);

@@ -301,7 +301,7 @@ function readCsvRowRange(filePath, fromDataIndex, toDataIndex) {
   try {
     if (!fs.existsSync(filePath)) return [];
     const content = fs.readFileSync(filePath, 'utf8');
-    const allRows = parse(content, { relax_quotes: true, skip_empty_lines: true, trim: true });
+    const allRows = parse(content, { relax_quotes: true, skip_empty_lines: true, trim: true, bom: true });
     if (allRows.length <= 1) return [];
     const dataRows = allRows.slice(1); // skip header
     return dataRows.slice(fromDataIndex, toDataIndex + 1);
@@ -1007,77 +1007,127 @@ async function getRows(page, retryCount = 0) {
     if (page.isClosed()) throw new Error("Target closed");
     if (await page.getByRole('heading', { name: 'No results found' }).isVisible().catch(()=>false)) return { success: true, data: [] };
 
-    // 1. Wait for the grid to be ready and get the scrollable element
-    const scrollBoxLocator = page.locator('.MuiDataGrid-virtualScroller, .ag-body-viewport, .table-container').first();
-    await scrollBoxLocator.waitFor({ state: 'visible', timeout: 10000 });
+    // 1. Wait for actual grid rows to render. This is far more reliable than waiting on a
+    //    CSS class — the ARIA role="row" is stable across id4me UI updates, the class isn't.
+    await page.waitForFunction(
+        () => document.querySelectorAll('div[role="row"]').length > 1,
+        { timeout: 8000 }
+    ).catch(() => {});
+
+    // Resolve the scrollable container by STRUCTURE, not class name — future-proof against
+    // id4me renaming/wrapping the grid (e.g. the v1.6.1 update). We try the known MUI/AG
+    // classes first, then fall back to walking up from the rows to find the scrollable parent.
+    const scrollHandle = await page.evaluateHandle(() => {
+        let el = document.querySelector('.MuiDataGrid-virtualScroller, .ag-body-viewport');
+        if (el) return el;
+        const rows = document.querySelectorAll('div[role="row"]');
+        if (!rows.length) return null;
+        let node = rows[rows.length - 1];
+        while (node && node !== document.body) {
+            const s = getComputedStyle(node);
+            if (node.scrollHeight > node.clientHeight + 5 && /(auto|scroll)/.test(s.overflowY)) return node;
+            node = node.parentElement;
+        }
+        return null;
+    }).catch(() => null);
+    const scrollBox = scrollHandle ? scrollHandle.asElement() : null;
+    const scrollBoxAvailable = !!scrollBox;
+    if (!scrollBoxAvailable) addActivity('[Diag] Scroll container not found — reading visible rows only (no scrolling).', 'warning');
+
+    // 2. Auto-detect column positions from the header row so UI updates don't break extraction.
+    //    Falls back to known-good v1.6.1 indices if the header can't be read.
+    const colMap = { name: 3, addr: 5, mobile: 7, email: 8, landline: 9, lastSeen: 10 };
+    try {
+        const headerCells = page.locator('div[role="columnheader"]');
+        const hCount = await headerCells.count();
+        if (hCount > 0) {
+            for (let h = 0; h < hCount; h++) {
+                const t = (await headerCells.nth(h).innerText({ timeout: 300 }).catch(() => "")).toLowerCase().trim();
+                if (t === 'name')                            colMap.name     = h;
+                else if (t === 'address')                    colMap.addr     = h;
+                else if (t.includes('mobile'))               colMap.mobile   = h;
+                else if (t === 'email')                      colMap.email    = h;
+                else if (t.includes('landline'))             colMap.landline = h;
+                else if (t.includes('last'))                 colMap.lastSeen = h;
+            }
+        }
+    } catch (e) { /* use defaults */ }
+    addActivity(`[Diag] Column map: name=${colMap.name} addr=${colMap.addr} mobile=${colMap.mobile} email=${colMap.email} landline=${colMap.landline} lastSeen=${colMap.lastSeen}`, 'info');
 
     const out = [];
     const seen = new Set();
-    let stagnantScrolls = 0;
 
-    // 2. Loop and scroll until we've seen everything
-    for (let i = 0; i < 150; i++) { // Max 150 scrolls to prevent an infinite loop
-        const previousSeenCount = seen.size;
+    if (scrollBoxAvailable) {
+      let stagnantScrolls = 0;
 
-        // 3. Scrape all currently visible rows using Playwright locators
-        const rows = page.locator('div[role="row"]');
-        const rowCount = await rows.count();
+      // 2. Loop and scroll until we've seen everything
+      for (let i = 0; i < 150; i++) { // Max 150 scrolls to prevent an infinite loop
+          const previousSeenCount = seen.size;
 
-        for (let j = 1; j < rowCount; j++) {
-            try {
-                const row = rows.nth(j);
-                const cells = row.locator('div[role="gridcell"]');
-                if (await cells.count() < 10) continue;
+          // 3. Scrape all currently visible rows using Playwright locators
+          const rows = page.locator('div[role="row"]');
+          const rowCount = await rows.count();
 
-                const name = await cells.nth(3).innerText({ timeout: 500 }).catch(() => "");
-                const addr = await cells.nth(5).innerText({ timeout: 500 }).catch(() => "");
-                const allMobiles = (await cells.nth(6).innerText({ timeout: 500 }).catch(() => "")).split("\n").map(s => s.trim()).filter(s => s && isPhoneNumber(s));
-                const mobile = allMobiles[0] || "";
-                const email = await cells.nth(7).innerText({ timeout: 500 }).catch(() => "");
-                const allLandlines = (await cells.nth(8).innerText({ timeout: 500 }).catch(() => "")).split("\n").map(s => s.trim()).filter(s => s && isPhoneNumber(s));
-                const landline = allLandlines[0] || "";
-                const lastSeen = await cells.nth(9).innerText({ timeout: 500 }).catch(() => "");
+          for (let j = 1; j < rowCount; j++) {
+              try {
+                  const row = rows.nth(j);
+                  const cells = row.locator('div[role="gridcell"]');
+                  if (await cells.count() < 10) continue;
 
-                if (!name) continue;
+                  const name = await cells.nth(colMap.name).innerText({ timeout: 500 }).catch(() => "");
+                  const addr = await cells.nth(colMap.addr).innerText({ timeout: 500 }).catch(() => "");
+                  const allMobiles = (await cells.nth(colMap.mobile).innerText({ timeout: 500 }).catch(() => "")).split("\n").map(s => s.trim()).filter(s => s && isPhoneNumber(s));
+                  const mobile = allMobiles[0] || "";
+                  const email = await cells.nth(colMap.email).innerText({ timeout: 500 }).catch(() => "");
+                  const allLandlines = (await cells.nth(colMap.landline).innerText({ timeout: 500 }).catch(() => "")).split("\n").map(s => s.trim()).filter(s => s && isPhoneNumber(s));
+                  const landline = allLandlines[0] || "";
+                  const lastSeen = await cells.nth(colMap.lastSeen).innerText({ timeout: 500 }).catch(() => "");
 
-                const lastSeenKey = lastSeen || `_row_${i}_${j}`;
-                const key = `${normalizeLoose(name)}|${normalizeLoose(addr)}|${normalizePhone(mobile)}|${normalizePhone(landline)}|${normalizeLoose(email)}|${normalizeLoose(lastSeenKey)}`;
-                if (!seen.has(key)) {
-                    seen.add(key);
-                    out.push({ name, addr, mobile, allMobiles, email, landline, allLandlines, lastSeen });
-                }
-            } catch (e) { /* Ignore individual row errors */ }
-        }
+                  if (!name) continue;
 
-        // 4. Directly evaluate our position and command a scroll
-        const isAtBottom = await scrollBoxLocator.evaluate(node => {
-            return (node.scrollHeight - node.scrollTop) <= (node.clientHeight + 5); // Check if we're at the bottom
-        });
+                  // Key on row CONTENT only — never scroll position. A virtualised grid
+                  // re-renders the same row at different positions as you scroll, so any
+                  // index-based key counts each person many times (the "180 of 24" bug).
+                  const key = `${normalizeLoose(name)}|${normalizeLoose(addr)}|${normalizePhone(mobile)}|${normalizePhone(landline)}|${normalizeLoose(email)}|${normalizeLoose(lastSeen)}`;
+                  if (!seen.has(key)) {
+                      seen.add(key);
+                      out.push({ name, addr, mobile, allMobiles, email, landline, allLandlines, lastSeen });
+                  }
+              } catch (e) { /* Ignore individual row errors */ }
+          }
 
-        if (isAtBottom) {
-            if (seen.size === previousSeenCount) {
-                stagnantScrolls++; // If at bottom and no new rows, increment counter
-            } else {
-                stagnantScrolls = 0; // If new rows appeared, reset
-            }
-        } else {
-            // If not at the bottom, scroll the box down directly
-            const step = isFastMode() ? 900 : 500;
-            await scrollBoxLocator.evaluate((node, scrollStep) => { node.scrollBy(0, scrollStep); }, step);
-            stagnantScrolls = 0;
-        }
-        
-        // 5. If we are at the bottom and nothing new has appeared for N straight cycles, we are done.
-        if (stagnantScrolls >= (isFastMode() ? 3 : 5)) {
-            break;
-        }
+          // 4. Directly evaluate our position and command a scroll
+          const isAtBottom = await scrollBox.evaluate(node => {
+              return (node.scrollHeight - node.scrollTop) <= (node.clientHeight + 5);
+          }).catch(() => true); // If the element detaches mid-loop, treat as at-bottom
 
-        await page.waitForSelector('div[role="row"]', { state: 'attached', timeout: isFastMode() ? 1500 : 2000 }).catch(() => {});
-        await page.waitForTimeout(isFastMode() ? 150 : 200); // Brief wait for new rows to render
-    }
+          if (isAtBottom) {
+              if (seen.size === previousSeenCount) {
+                  stagnantScrolls++;
+              } else {
+                  stagnantScrolls = 0;
+              }
+          } else {
+              const step = isFastMode() ? 900 : 500;
+              await scrollBox.evaluate((node, scrollStep) => { node.scrollBy(0, scrollStep); }, step).catch(() => {});
+              stagnantScrolls = 0;
+          }
 
-    // Final pass: scroll back to top and re-read to catch rows unloaded during downward scroll
-    await scrollBoxLocator.evaluate(node => { node.scrollTop = 0; }).catch(() => {});
+          if (stagnantScrolls >= (isFastMode() ? 2 : 3)) {
+              break;
+          }
+
+          const isStagnant = isAtBottom && seen.size === previousSeenCount;
+          if (!isStagnant) {
+              await page.waitForSelector('div[role="row"]', { state: 'attached', timeout: isFastMode() ? 1500 : 2000 }).catch(() => {});
+          }
+          await page.waitForTimeout(isFastMode() ? 150 : 200);
+      }
+
+      // Final pass prep: scroll back to top before re-reading
+      await scrollBox.evaluate(node => { node.scrollTop = 0; }).catch(() => {});
+    } // end if (scrollBoxAvailable)
+
     await page.waitForTimeout(isFastMode() ? 200 : 400);
     const finalRows = page.locator('div[role="row"]');
     const finalRowCount = await finalRows.count();
@@ -1086,17 +1136,16 @@ async function getRows(page, retryCount = 0) {
             const row = finalRows.nth(j);
             const cells = row.locator('div[role="gridcell"]');
             if (await cells.count() < 10) continue;
-            const name = await cells.nth(3).innerText({ timeout: 500 }).catch(() => "");
-            const addr = await cells.nth(5).innerText({ timeout: 500 }).catch(() => "");
-            const allMobiles = (await cells.nth(6).innerText({ timeout: 500 }).catch(() => "")).split("\n").map(s => s.trim()).filter(s => s && isPhoneNumber(s));
+            const name = await cells.nth(colMap.name).innerText({ timeout: 500 }).catch(() => "");
+            const addr = await cells.nth(colMap.addr).innerText({ timeout: 500 }).catch(() => "");
+            const allMobiles = (await cells.nth(colMap.mobile).innerText({ timeout: 500 }).catch(() => "")).split("\n").map(s => s.trim()).filter(s => s && isPhoneNumber(s));
             const mobile = allMobiles[0] || "";
-            const email = await cells.nth(7).innerText({ timeout: 500 }).catch(() => "");
-            const allLandlines = (await cells.nth(8).innerText({ timeout: 500 }).catch(() => "")).split("\n").map(s => s.trim()).filter(s => s && isPhoneNumber(s));
+            const email = await cells.nth(colMap.email).innerText({ timeout: 500 }).catch(() => "");
+            const allLandlines = (await cells.nth(colMap.landline).innerText({ timeout: 500 }).catch(() => "")).split("\n").map(s => s.trim()).filter(s => s && isPhoneNumber(s));
             const landline = allLandlines[0] || "";
-            const lastSeen = await cells.nth(9).innerText({ timeout: 500 }).catch(() => "");
+            const lastSeen = await cells.nth(colMap.lastSeen).innerText({ timeout: 500 }).catch(() => "");
             if (!name) continue;
-            const lastSeenKey = lastSeen || `_row_final_${j}`;
-            const key = `${normalizeLoose(name)}|${normalizeLoose(addr)}|${normalizePhone(mobile)}|${normalizePhone(landline)}|${normalizeLoose(email)}|${normalizeLoose(lastSeenKey)}`;
+            const key = `${normalizeLoose(name)}|${normalizeLoose(addr)}|${normalizePhone(mobile)}|${normalizePhone(landline)}|${normalizeLoose(email)}|${normalizeLoose(lastSeen)}`;
             if (!seen.has(key)) { seen.add(key); out.push({ name, addr, mobile, allMobiles, email, landline, allLandlines, lastSeen }); }
         } catch (e) {}
     }
@@ -1438,10 +1487,21 @@ async function addressScan(page, address, postcode, ownerName, suburb, coOwners 
 async function searchId4meByName(page, fullName) {
   try {
     if (page.isClosed()) throw new Error("Target closed");
+    // Use Normal Search — same mode as address scans, and the mode the client confirmed
+    // returns exactly 1 result per name manually.
+    await ensureNormalSearch(page);
     await clearSearch(page);
     await addFirstChip(page, fullName);
-    await page.waitForSelector('.MuiDataGrid-row, div[role="row"]', { state: 'attached', timeout: isFastMode() ? 3000 : 5000 }).catch(() => {});
-    await page.waitForTimeout(isFastMode() ? 100 : 300);
+
+    // CRITICAL: after clearSearch the grid shows the "Search History" list (~150 entries).
+    // We must wait for the new name search to actually execute before reading rows —
+    // otherwise getRows reads the leftover history list (the identical "151 results" bug).
+    // The results view has an "of N results" pagination counter; the history view does NOT.
+    // Waiting for that counter to appear confirms the search executed — and it won't hang
+    // on id4me's never-idle tracker connections the way networkidle did.
+    await page.getByText(/of \d+ results?/i).first()
+        .waitFor({ state: 'visible', timeout: isFastMode() ? 5000 : 8000 }).catch(() => {});
+    await page.waitForTimeout(isFastMode() ? 200 : 400);
 
     // Read the pagination counter (e.g. "1–13 of 13 results") before scrolling all rows.
     // If the total exceeds MAX_RESULT_COUNT, bail immediately without calling getRows.
@@ -1534,11 +1594,22 @@ async function addressScanGrouped(page, address, postcode, ownerNames, suburb, c
         await addFirstChip(page, suburbDisplay ? `${address} ${suburbDisplay}` : address);
 
         updateStatus(`Waiting for ID4Me to load ${address}...`, true);
-        await page.waitForSelector('.MuiDataGrid-row, div[role="row"]', { state: 'attached', timeout: isFastMode() ? 3000 : 5000 }).catch(() => {});
+        // Wait for grid rows to render. Uses the stable ARIA role rather than a CSS class
+        // (the class breaks on id4me UI updates); getRows does its own row-readiness wait too.
+        const gridReady = await page.waitForFunction(
+            () => document.querySelectorAll('div[role="row"]').length > 1,
+            { timeout: isFastMode() ? 8000 : 12000 }
+        ).then(() => true).catch(() => false);
+        if (!gridReady) addActivity(`[Diag] Grid did not appear within timeout for "${address}" — proceeding anyway.`, 'warning');
         await page.waitForTimeout(isFastMode() ? 100 : 300);
 
         updateStatus(`Scraping all residents for ${address}...`, true);
         const rowsResult = await getRows(page);
+
+        if (rowsResult.success) {
+            const sampleAddrs = [...new Set(rowsResult.data.slice(0, 30).map(r => r.addr).filter(Boolean))].slice(0, 4).join(' | ');
+            addActivity(`[Diag] "${address}" — ${rowsResult.data.length} result(s). Sample: ${sampleAddrs || '(none)'}`, 'info');
+        }
 
         if (!rowsResult.success) {
             // getRows failed — possibly still in wrong search mode on first attempt.
@@ -2237,7 +2308,7 @@ ipcMain.on('start-scrape', async (event, speedMode, isStrictHomeownersOnly, outp
 
     // 4. Read CSV
     const fileContent = fs.readFileSync(INPUT_FILE, "utf8");
-    let rawRows = parse(fileContent, { relax_quotes: true, skip_empty_lines: true, trim: true, relax_column_count: true });
+    let rawRows = parse(fileContent, { relax_quotes: true, skip_empty_lines: true, trim: true, relax_column_count: true, bom: true });
 
     // Detect CSV format by checking header row
     const headerCells = rawRows.length > 0 ? rawRows[0].map(h => h.toLowerCase().trim()) : [];
@@ -2445,7 +2516,7 @@ ipcMain.on('start-scrape', async (event, speedMode, isStrictHomeownersOnly, outp
       }
 
       const record = ownersList[i];
-      const ownerName = record.owner, address = record.row[0], suburb = record.row[1], postcode = record.row[3];
+      const ownerName = record.owner, address = (record.row[0] || "").trim(), suburb = (record.row[1] || "").trim(), postcode = (record.row[3] || "").trim();
       const lastSoldDate = normalizeDateString(record.row[4]);
 
       updateStatus(`Scanning: ${ownerName} (${address})`, true);
