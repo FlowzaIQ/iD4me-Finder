@@ -242,7 +242,7 @@ ipcRenderer.on('activity-update', (event, data) => {
 ipcRenderer.on('scrape-finished', () => {
     if (startBtn) {
         startBtn.disabled = false;
-        startBtn.innerText = "Select CSV & Start Again";
+        startBtn.innerText = "Select Spreadsheet & Start Again";
     }
     if (speedSelect) speedSelect.disabled = false;
     if (statusSpinner) statusSpinner.classList.add('hidden');

@@ -831,7 +831,7 @@
             <button id="openFolderBtn" style="background-color: var(--text-muted);">📂 Results</button>
             <button id="pauseBtn" class="hidden" style="background-color: var(--warning); color: #fff;">⏸️ Pause</button>
             <button id="stopBtn" class="hidden" style="background-color: var(--danger); color: #fff;">🛑 Stop</button>
-            <button id="master-start-btn">Select CSV & Start</button>
+            <button id="master-start-btn">Select Spreadsheet & Start</button>
         </div>
     </div>
 
@@ -872,7 +872,7 @@
         </div>
         <div class="status-box">
             <div id="status-spinner" class="status-spinner hidden"></div>
-            <span id="current-status">Ready to begin. Please select a CSV file.</span>
+            <span id="current-status">Ready to begin. Please select a CSV or Excel (.xlsx) file.</span>
         </div>
     </div>
 
@@ -1595,8 +1595,8 @@
                         target: () => speedDropdown
                     },
                     {
-                        title: 'Select CSV',
-                        body: 'Click this to choose your input file and begin the run.',
+                        title: 'Select Spreadsheet',
+                        body: 'Click this to choose your input file (CSV or Excel .xlsx) and begin the run.',
                         target: () => startBtn
                     },
                     {

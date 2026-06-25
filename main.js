@@ -7,6 +7,28 @@ const http = require('http');
 const { google } = require('googleapis');
 const { parse } = require("csv-parse/sync");
 const { stringify } = require("csv-stringify/sync");
+const XLSX = require("xlsx");
+
+// Read an input spreadsheet (.csv, .xlsx or .xls) into an array of string rows.
+// Both branches return the same shape csv-parse produces: rows of trimmed string cells.
+function readSheetRows(filePath) {
+  const ext = path.extname(filePath).toLowerCase();
+  if (ext === ".xlsx" || ext === ".xls" || ext === ".xlsm") {
+    const workbook = XLSX.readFile(filePath, { cellDates: false });
+    const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
+    if (!firstSheet) return [];
+    // header:1 -> array of arrays; raw:false -> formatted strings; defval keeps blank cells aligned
+    const rows = XLSX.utils.sheet_to_json(firstSheet, { header: 1, raw: false, defval: "", blankrows: false });
+    return rows.map(row => row.map(cell => (cell == null ? "" : String(cell).trim())));
+  }
+  const content = fs.readFileSync(filePath, "utf8");
+  return parse(content, { relax_quotes: true, skip_empty_lines: true, trim: true, relax_column_count: true, bom: true });
+}
+
+// Strip a known input spreadsheet extension from a filename (for output/checkpoint naming).
+function stripInputExt(name) {
+  return name.replace(/\.(csv|xlsx|xls|xlsm)$/i, "");
+}
 const { generateNameVariations, evaluateAbsenteeResolution, MAX_RESULT_COUNT, RESOLVED_STATUS } = require("./absentee_utils");
 const { isNetworkFailure } = require("./network_utils");
 const { normalizeDateString } = require("./date_utils");
@@ -256,7 +278,7 @@ if (!fs.existsSync(OUTPUT_DIR)) {
 }
 
 function getCheckpointFile(csvFilename) {
-  const safeName = path.basename(csvFilename).replace('.csv', '').replace(/[^a-z0-9]/gi, '_');
+  const safeName = stripInputExt(path.basename(csvFilename)).replace(/[^a-z0-9]/gi, '_');
   return path.join(BASE_DIR, `.checkpoint_${safeName}.json`);
 }
 
@@ -300,8 +322,7 @@ function clearCheckpoint(csvFilename) {
 function readCsvRowRange(filePath, fromDataIndex, toDataIndex) {
   try {
     if (!fs.existsSync(filePath)) return [];
-    const content = fs.readFileSync(filePath, 'utf8');
-    const allRows = parse(content, { relax_quotes: true, skip_empty_lines: true, trim: true, bom: true });
+    const allRows = readSheetRows(filePath);
     if (allRows.length <= 1) return [];
     const dataRows = allRows.slice(1); // skip header
     return dataRows.slice(fromDataIndex, toDataIndex + 1);
@@ -1009,8 +1030,14 @@ async function getRows(page, retryCount = 0) {
 
     // 1. Wait for actual grid rows to render. This is far more reliable than waiting on a
     //    CSS class — the ARIA role="row" is stable across id4me UI updates, the class isn't.
+    //    Also resolve on "No results found" so a 0-result search returns instantly.
     await page.waitForFunction(
-        () => document.querySelectorAll('div[role="row"]').length > 1,
+        () => {
+            if (document.querySelectorAll('div[role="row"]').length > 1) return true;
+            const heads = document.querySelectorAll('[role="heading"], h1, h2, h3, h4, h5, h6');
+            for (const h of heads) if (/no results found/i.test(h.textContent || '')) return true;
+            return false;
+        },
         { timeout: 8000 }
     ).catch(() => {});
 
@@ -1497,10 +1524,12 @@ async function searchId4meByName(page, fullName) {
     // We must wait for the new name search to actually execute before reading rows —
     // otherwise getRows reads the leftover history list (the identical "151 results" bug).
     // The results view has an "of N results" pagination counter; the history view does NOT.
-    // Waiting for that counter to appear confirms the search executed — and it won't hang
-    // on id4me's never-idle tracker connections the way networkidle did.
-    await page.getByText(/of \d+ results?/i).first()
-        .waitFor({ state: 'visible', timeout: isFastMode() ? 5000 : 8000 }).catch(() => {});
+    // Waiting for that counter (OR a "No results found" message) confirms the search executed —
+    // resolving on the empty-results message keeps a 0-result name from burning the full timeout.
+    await Promise.race([
+        page.getByText(/of \d+ results?/i).first().waitFor({ state: 'visible', timeout: isFastMode() ? 5000 : 8000 }),
+        page.getByRole('heading', { name: 'No results found' }).waitFor({ state: 'visible', timeout: isFastMode() ? 5000 : 8000 }),
+    ]).catch(() => {});
     await page.waitForTimeout(isFastMode() ? 200 : 400);
 
     // Read the pagination counter (e.g. "1–13 of 13 results") before scrolling all rows.
@@ -1594,10 +1623,16 @@ async function addressScanGrouped(page, address, postcode, ownerNames, suburb, c
         await addFirstChip(page, suburbDisplay ? `${address} ${suburbDisplay}` : address);
 
         updateStatus(`Waiting for ID4Me to load ${address}...`, true);
-        // Wait for grid rows to render. Uses the stable ARIA role rather than a CSS class
-        // (the class breaks on id4me UI updates); getRows does its own row-readiness wait too.
+        // Wait for grid rows to render OR a "No results found" message. Resolving on the
+        // empty-results message means a 0-result address returns instantly instead of
+        // burning the full timeout waiting for rows that will never appear.
         const gridReady = await page.waitForFunction(
-            () => document.querySelectorAll('div[role="row"]').length > 1,
+            () => {
+                if (document.querySelectorAll('div[role="row"]').length > 1) return true;
+                const heads = document.querySelectorAll('[role="heading"], h1, h2, h3, h4, h5, h6');
+                for (const h of heads) if (/no results found/i.test(h.textContent || '')) return true;
+                return false;
+            },
             { timeout: isFastMode() ? 8000 : 12000 }
         ).then(() => true).catch(() => false);
         if (!gridReady) addActivity(`[Diag] Grid did not appear within timeout for "${address}" — proceeding anyway.`, 'warning');
@@ -2204,8 +2239,8 @@ ipcMain.on('start-scrape', async (event, speedMode, isStrictHomeownersOnly, outp
 
     // 2. Native File Picker Dialog
     const filePaths = dialog.showOpenDialogSync(mainWindow, {
-      title: 'Select Input CSV',
-      filters: [{ name: 'CSV Files', extensions: ['csv'] }],
+      title: 'Select Input Spreadsheet',
+      filters: [{ name: 'Spreadsheets', extensions: ['csv', 'xlsx', 'xls', 'xlsm'] }],
       properties: ['openFile']
     });
 
@@ -2276,7 +2311,7 @@ ipcMain.on('start-scrape', async (event, speedMode, isStrictHomeownersOnly, outp
       }
       // User chose to run again — clear and start fresh
       clearCheckpoint(selectedFile);
-      OUTPUT_FILE = path.join(OUTPUT_DIR, `Results_${selectedFile.replace('.csv', '')}_${timestamp()}.csv`);
+      OUTPUT_FILE = path.join(OUTPUT_DIR, `Results_${stripInputExt(selectedFile)}_${timestamp()}.csv`);
       addActivity("Starting fresh run (previous run was completed).", 'info');
     } else if (checkpoint) {
       priorCheckpointIndex = checkpoint.lastCompletedIndex;
@@ -2299,16 +2334,15 @@ ipcMain.on('start-scrape', async (event, speedMode, isStrictHomeownersOnly, outp
         addActivity("Resuming from checkpoint.", 'info');
       } else {
         clearCheckpoint(selectedFile);
-        OUTPUT_FILE = path.join(OUTPUT_DIR, `Results_${selectedFile.replace('.csv', '')}_${timestamp()}.csv`);
+        OUTPUT_FILE = path.join(OUTPUT_DIR, `Results_${stripInputExt(selectedFile)}_${timestamp()}.csv`);
         addActivity("Starting fresh run.", 'info');
       }
     } else {
-      OUTPUT_FILE = path.join(OUTPUT_DIR, `Results_${selectedFile.replace('.csv', '')}_${timestamp()}.csv`);
+      OUTPUT_FILE = path.join(OUTPUT_DIR, `Results_${stripInputExt(selectedFile)}_${timestamp()}.csv`);
     }
 
-    // 4. Read CSV
-    const fileContent = fs.readFileSync(INPUT_FILE, "utf8");
-    let rawRows = parse(fileContent, { relax_quotes: true, skip_empty_lines: true, trim: true, relax_column_count: true, bom: true });
+    // 4. Read input spreadsheet (.csv, .xlsx, .xls)
+    let rawRows = readSheetRows(INPUT_FILE);
 
     // Detect CSV format by checking header row
     const headerCells = rawRows.length > 0 ? rawRows[0].map(h => h.toLowerCase().trim()) : [];
@@ -2392,7 +2426,7 @@ ipcMain.on('start-scrape', async (event, speedMode, isStrictHomeownersOnly, outp
     // If the checkpoint points to a missing output file (e.g. user discarded it),
     // generate a new output file but keep the checkpoint progress.
     if (checkpoint && startIndex > 0 && OUTPUT_FILE && !fs.existsSync(OUTPUT_FILE)) {
-        const newOutputFile = path.join(OUTPUT_DIR, `Results_${selectedFile.replace('.csv', '')}_${timestamp()}.csv`);
+        const newOutputFile = path.join(OUTPUT_DIR, `Results_${stripInputExt(selectedFile)}_${timestamp()}.csv`);
         OUTPUT_FILE = newOutputFile;
         saveCheckpoint(selectedFile, startIndex - 1, OUTPUT_FILE);
         addActivity("Previous output file was missing. Created a new results file and kept your progress.", "warning");
@@ -2448,7 +2482,7 @@ ipcMain.on('start-scrape', async (event, speedMode, isStrictHomeownersOnly, outp
             } else {
                 // ── FRESH RUN: create a new sheet and write the header ──
                 const drive = google.drive({ version: 'v3', auth: oauth2Client });
-                const sheetTitle = `ID4Me Live - ${selectedFile.replace('.csv', '')} ${timestamp()}`;
+                const sheetTitle = `ID4Me Live - ${stripInputExt(selectedFile)} ${timestamp()}`;
                 const sheet = await sheetsClient.spreadsheets.create({
                     requestBody: { properties: { title: sheetTitle } }
                 });

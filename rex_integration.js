@@ -23,6 +23,11 @@ let _propertyCache  = new Map();  // "number|name|suburb" → Rex property ID
 let _pendingSync    = new Map();  // address string → { propertyId, newFirstNames: Set }
 let _rowBuffer      = [];         // rows collected during scrape, pushed to Rex after run ends
 let _notedKeys      = new Set();  // "contactId|propertyId" already given a note this run (dedupe)
+let _taggedKeys     = new Set();  // "contact:ID" / "property:ID" already tagged this run (dedupe)
+
+// Tag attached to every scraped contact + property. MUST already exist in Rex — this account
+// cannot create system tags via the API; we only ever link the existing tag by name.
+const SCRAPED_TAG = "ID4me Scraper";
 
 // ─── HTTP helper ──────────────────────────────────────────────────────────────
 const REX_TIMEOUT_MS = 30000; // 30 seconds — gives Rex plenty of time to respond
@@ -477,12 +482,45 @@ async function addScrapedNote(contactId, token, propertyId = null) {
     }
 }
 
+// ─── Apply the "ID4me Scraper" tag to a contact or property ───────────────────
+// Confirmed shapes via /contacts/describe & /properties/describe:
+//   contacts  → related.contact_tags  = [{ tag: "<name>" }]
+//   properties→ related.property_tags = [{ tag: "<name>" }]
+// Links the existing tag by NAME (never hits admin-tags/create, which this account can't use).
+async function applyScrapedTag(recordType, recordId, token) {
+    if (!recordId) return;
+
+    // Within-run dedup — only touch each record once per run.
+    const dedupKey = `${recordType}:${recordId}`;
+    if (_taggedKeys.has(dedupKey)) return;
+    _taggedKeys.add(dedupKey);
+
+    const cfg = recordType === "contact"
+        ? { path: "/contacts/update",   readPath: "/contacts/read",   field: "contact_tags" }
+        : { path: "/properties/update", readPath: "/properties/read", field: "property_tags" };
+
+    // Cross-run dedup — skip if the tag is already on the record (prevents stacking over months).
+    const readRes = await rexPost(cfg.readPath, { id: recordId, extra_fields: [cfg.field] }, token);
+    const existing = readRes.body?.result?.related?.[cfg.field] ?? [];
+    if (existing.some(t => String(t.tag).toLowerCase() === SCRAPED_TAG.toLowerCase())) return;
+
+    // Rex merges related sub-records on update, so sending just the new tag preserves any others.
+    const res = await rexPost(cfg.path, {
+        data: { id: recordId, related: { [cfg.field]: [{ tag: SCRAPED_TAG }] } }
+    }, token);
+
+    if (res.status !== 200 || res.body?.error) {
+        console.error(`applyScrapedTag (${recordType} ${recordId}) failed:`, JSON.stringify(res.body?.error?.message));
+    }
+}
+
 // ─── Public: Initialise Rex session ──────────────────────────────────────────
 async function initRexSession(email, password) {
     _propertyCache.clear();
     _pendingSync.clear();
     _rowBuffer = [];
     _notedKeys.clear();
+    _taggedKeys.clear();
 
     const loginRes = await rexPost("/Authentication/login", { email, password });
     if (loginRes.status !== 200 || typeof loginRes.body?.result !== "string") {
@@ -572,7 +610,12 @@ async function _pushToRexNow(rowData, token, onLog = null) {
         await addScrapedNote(contactId, token, propertyId);
     }
 
-    // 5. Track for ownership sync (keyed by original address string)
+    // 5. Tag the contact and property with "ID4me Scraper" (once per record per run, no dupes).
+    //    Applies to homeowners AND absentee investors — both flow through here.
+    await applyScrapedTag("contact", contactId, token);
+    await applyScrapedTag("property", propertyId, token);
+
+    // 6. Track for ownership sync (keyed by original address string)
     if (!_pendingSync.has(originalAddress)) {
         const prevOwners = await fetchExistingOwners(propertyId, token);
         log(`Snapshotted ${prevOwners.length} existing owner(s) for "${originalAddress}"`);
