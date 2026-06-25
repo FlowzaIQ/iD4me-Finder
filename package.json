@@ -1,6 +1,6 @@
 {
   "name": "id4me-scraper",
-  "version": "2.4.0",
+  "version": "2.4.1",
   "description": "ID4Me Automation Tool",
   "main": "main.js",
   "author": "Flowza IQ",
@@ -22,13 +22,26 @@
       "repo": "iD4me-Finder"
     },
     "mac": {
-      "target": {
-        "target": "dmg",
-        "arch": [
-          "universal"
-        ]
-      },
-      "icon": "assets/favicon2.icns"
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "universal"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "universal"
+          ]
+        }
+      ],
+      "icon": "assets/favicon2.icns",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "notarize": true
     },
     "win": {
       "target": "nsis",

@@ -115,7 +115,7 @@ if (loginBtn) {
             if (isAuthorized) {
                 // ?? Personalize the Dashboard!
                 if (dashboardTitle) {
-                    dashboardTitle.innerText = `hello world`;
+                    dashboardTitle.innerText = `Welcome, ${authorizedUsername}`;
                 }
 
                 ipcRenderer.send('set-plan-data', { planType, allowedSuburbs });
