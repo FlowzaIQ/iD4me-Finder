@@ -650,6 +650,15 @@ function parsePriceFinderCSV(rows) {
   return result;
 }
 
+// Extract a strata unit number from a legal description like "L29 SP321307".
+// Only strata-style plans (SP/BUP/GTP) map lot number → unit number; freehold
+// house lots (RP/CP) do not, so those return null and keep their real street
+// number. Ranges/lists (e.g. body-corporate "L1-6,23-34 SP...") also return null.
+function unitFromLegalDescription(legal) {
+  const m = (legal || "").trim().match(/^L\s?(\d+)\s+(SP|BUP|GTP)\d/i);
+  return m ? m[1] : null;
+}
+
 function parseOwnershipSearchCSV(rows) {
   const header = rows[0].map(h => h.toLowerCase().trim());
   const col = name => header.indexOf(name);
@@ -660,6 +669,7 @@ function parseOwnershipSearchCSV(rows) {
   const idxDate     = col("last sale date");
   const idxOwner    = col("current owners");
   const idxGovNum   = col("government number");
+  const idxLegal    = col("legal description");
 
   const addressMap = new Map();
 
@@ -672,6 +682,7 @@ function parseOwnershipSearchCSV(rows) {
     const postcode = (r[idxPostcode] || "").trim();
     const rawDate  = (r[idxDate]     || "").trim();
     const rawOwner = (r[idxOwner]    || "").trim().replace(/\.+$/, "");
+    const legal    = idxLegal >= 0 ? (r[idxLegal] || "").trim() : "";
 
     if (!address) continue;
 
@@ -685,8 +696,10 @@ function parseOwnershipSearchCSV(rows) {
       date = `${day} ${month} ${year}`;
     }
 
+    // Group by the base street address; strata units share one street address and
+    // are only distinguished later by their legal description / unit number.
     const addressKey = `${address.toUpperCase()}|${postcode}`;
-    const entry = { address, suburb, state, postcode, date, rawOwner, rawDate };
+    const entry = { address, suburb, state, postcode, date, rawOwner, rawDate, legal };
 
     if (!addressMap.has(addressKey)) {
       addressMap.set(addressKey, [entry]);
@@ -696,13 +709,34 @@ function parseOwnershipSearchCSV(rows) {
   }
 
   const result = [];
+  const pushEntry = (e, addressOverride) => {
+    const [o1, o2, o3] = splitPriceFinderOwners(e.rawOwner);
+    result.push([addressOverride || e.address, e.suburb, e.state, e.postcode, e.date, o1, o2, o3]);
+  };
 
   for (const [, entries] of addressMap) {
     if (entries.length === 1) {
-      const e = entries[0];
-      const [o1, o2, o3] = splitPriceFinderOwners(e.rawOwner);
-      result.push([e.address, e.suburb, e.state, e.postcode, e.date, o1, o2, o3]);
+      pushEntry(entries[0]);
+      continue;
+    }
+
+    // Multiple rows share this street address. Distinct legal descriptions mean
+    // genuinely different properties (e.g. strata units in one building) rather
+    // than resale history of a single property.
+    const distinctLegals = new Set(entries.map(e => e.legal).filter(Boolean));
+
+    if (distinctLegals.size > 1) {
+      // Keep every unit. Prefix strata units with their unit number so the address
+      // search targets the specific unit (e.g. "29/120 RIDLEY ROAD"); non-strata
+      // lots keep their existing street address.
+      for (const e of entries) {
+        const unit = unitFromLegalDescription(e.legal);
+        pushEntry(e, unit ? `${unit}/${e.address}` : e.address);
+      }
     } else {
+      // Same (or missing) legal description across rows → fall back to sale-date
+      // logic: one shared date = co-owners on a single title (keep all); different
+      // dates = resale history of one property (keep only the most recent).
       const withParsedDate = entries.map(e => {
         const m = e.rawDate.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
         const ts = m ? new Date(`${m[3]}-${m[2].padStart(2,"0")}-${m[1].padStart(2,"0")}`).getTime() : 0;
@@ -717,15 +751,10 @@ function parseOwnershipSearchCSV(rows) {
       }
 
       if (dateGroups.size === 1) {
-        for (const e of withParsedDate) {
-          const [o1, o2, o3] = splitPriceFinderOwners(e.rawOwner);
-          result.push([e.address, e.suburb, e.state, e.postcode, e.date, o1, o2, o3]);
-        }
+        for (const e of withParsedDate) pushEntry(e);
       } else {
         withParsedDate.sort((a, b) => b.ts - a.ts);
-        const mostRecent = withParsedDate[0];
-        const [o1, o2, o3] = splitPriceFinderOwners(mostRecent.rawOwner);
-        result.push([mostRecent.address, mostRecent.suburb, mostRecent.state, mostRecent.postcode, mostRecent.date, o1, o2, o3]);
+        pushEntry(withParsedDate[0]);
       }
     }
   }
