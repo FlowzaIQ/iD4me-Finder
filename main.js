@@ -8,6 +8,7 @@ const { google } = require('googleapis');
 const { parse } = require("csv-parse/sync");
 const { stringify } = require("csv-stringify/sync");
 const XLSX = require("xlsx");
+const { expandStreetSuffix } = require("./address_utils");
 
 // Read an input spreadsheet (.csv, .xlsx or .xls) into an array of string rows.
 // Both branches return the same shape csv-parse produces: rows of trimmed string cells.
@@ -466,61 +467,6 @@ function isExcludedOwnerName(name) {
     "ARCHBISHOP",
     "ARCHIBISHOP"
   ].some(b => n.includes(b));
-}
-const STREET_SUFFIX_MAP = {
-  "AV":        "AVENUE",
-  "AVE":       "AVENUE",
-  "BLVD":      "BOULEVARD",
-  "BVD":       "BOULEVARD",
-  "CCT":       "CIRCUIT",
-  "CRCT":      "CIRCUIT",
-  "CIRCUIT":   "CIRCUIT",
-  "CIR":       "CIRCLE",
-  "CL":        "CLOSE",
-  "CLOSE":     "CLOSE",
-  "CRES":      "CRESCENT",
-  "CRESCENT":  "CRESCENT",
-  "CRT":       "COURT",
-  "CT":        "COURT",
-  "COURT":     "COURT",
-  "DR":        "DRIVE",
-  "DVE":       "DRIVE",
-  "DRIVE":     "DRIVE",
-  "GR":        "GROVE",
-  "GROVE":     "GROVE",
-  "HWY":       "HIGHWAY",
-  "HIGHWAY":   "HIGHWAY",
-  "LANE":      "LANE",
-  "LINK":      "LINK",
-  "LOOP":      "LOOP",
-  "MEWS":      "MEWS",
-  "PDE":       "PARADE",
-  "PARADE":    "PARADE",
-  "PKWY":      "PARKWAY",
-  "PARKWAY":   "PARKWAY",
-  "PL":        "PLACE",
-  "PLACE":     "PLACE",
-  "RD":        "ROAD",
-  "ROAD":      "ROAD",
-  "RISE":      "RISE",
-  "CHASE":     "CHASE",
-  "SQ":        "SQUARE",
-  "SQUARE":    "SQUARE",
-  "ST":        "STREET",
-  "STREET":    "STREET",
-  "TCE":       "TERRACE",
-  "TERRACE":   "TERRACE",
-  "WALK":      "WALK",
-  "WAY":       "WAY",
-};
-
-function expandStreetSuffix(address) {
-  if (!address) return address;
-  // Only expand the last word of the address (the street type)
-  return address.replace(/\b(\w+)$/, match => {
-    const upper = match.toUpperCase();
-    return STREET_SUFFIX_MAP[upper] || match;
-  });
 }
 
 function splitPriceFinderOwners(rawOwner) {
