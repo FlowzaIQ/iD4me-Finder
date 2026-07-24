@@ -1,6 +1,6 @@
 {
   "name": "id4me-scraper",
-  "version": "2.4.2",
+  "version": "2.4.4",
   "description": "ID4Me Automation Tool",
   "main": "main.js",
   "author": "Flowza IQ",
@@ -8,7 +8,7 @@
     "start": "electron .",
     "build:mac": "electron-builder --mac",
     "build:win": "electron-builder --win",
-    "test": "node tests/absentee.test.js && node tests/date.test.js && node tests/network.test.js"
+    "test": "node tests/absentee.test.js && node tests/date.test.js && node tests/network.test.js && node tests/address.test.js"
   },
   "build": {
     "appId": "com.yourname.id4me-scraper",
