@@ -876,6 +876,84 @@ async function waitForPageReady(page) {
   }
 }
 
+/* ==================================================
+   EMPTY-STATE ("No results found") DETECTION
+
+   id4me re-skins this screen regularly. It used to be a real
+   <h2 role="heading">No results found</h2>; as of the latest UI it is a plain
+   container that reads "No results foundTry these tips" — so
+   getByRole('heading', { name: 'No results found' }) silently stops matching and
+   every 0-result search burns the full timeout and looks like a failure.
+
+   Instead of binding to a role/tag/class, we scan the visible text of the page
+   for the WORDS. Copy changes far less often than markup, and when it does the
+   fix is one string in the list below rather than a selector rewrite.
+   ================================================== */
+const EMPTY_STATE_PATTERNS = [
+  'no results found',
+  'no results for',
+  'no matching results',
+  'no records found',
+  "we couldn't find",
+  'we could not find',
+  'nothing found',
+  'try these tips',      // companion line of the current empty state
+];
+
+// Runs INSIDE the browser — it cannot reference anything outside its own body.
+// One DOM pass returns everything the callers need: how many grid rows exist,
+// whether an empty-state message is on screen, and the pagination total.
+function detectGridState({ patterns }) {
+  const rows = document.querySelectorAll('div[role="row"]').length;
+  let empty = false;
+  let total = null;
+
+  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    const raw = (node.nodeValue || '').replace(/\s+/g, ' ').trim();
+    if (!raw || raw.length > 300) continue;
+
+    const el = node.parentElement;
+    // Ignore text that isn't actually rendered (hidden templates, aria-live stubs).
+    if (!el || typeof el.getClientRects !== 'function' || el.getClientRects().length === 0) continue;
+
+    const txt = raw.toLowerCase();
+    if (!empty && patterns.some(p => txt.includes(p))) empty = true;
+
+    if (total === null) {
+      const m = raw.match(/of (\d+) results?/i);
+      if (m) total = parseInt(m[1], 10);
+    }
+    if (empty && total !== null) break;
+  }
+
+  return { rows, empty, total };
+}
+
+async function readGridState(page) {
+  if (page.isClosed()) return { rows: 0, empty: false, total: null };
+  const state = await page
+    .evaluate(detectGridState, { patterns: EMPTY_STATE_PATTERNS })
+    .catch(() => null);
+  return state || { rows: 0, empty: false, total: null };
+}
+
+// Polls until the grid has rendered rows OR an empty-state message appeared OR the
+// pagination counter showed up (proof the search actually executed). Returns
+// { rows, empty, total, ready } — ready === false means we timed out.
+async function waitForGridOrEmpty(page, timeout, { requireCounter = false } = {}) {
+  const deadline = Date.now() + timeout;
+  let last = { rows: 0, empty: false, total: null };
+  while (Date.now() < deadline) {
+    if (page.isClosed()) break;
+    last = await readGridState(page);
+    const settled = last.empty || (requireCounter ? last.total !== null : last.rows > 1);
+    if (settled) return { ...last, ready: true };
+    await page.waitForTimeout(150).catch(() => {});
+  }
+  return { ...last, ready: false };
+}
+
 async function ensureNormalSearch(page) {
   try {
     if (page.isClosed()) throw new Error("Target closed");
@@ -1001,20 +1079,11 @@ async function addChip(page, txt) {
 async function getRows(page, retryCount = 0) {
   try {
     if (page.isClosed()) throw new Error("Target closed");
-    if (await page.getByRole('heading', { name: 'No results found' }).isVisible().catch(()=>false)) return { success: true, data: [] };
-
     // 1. Wait for actual grid rows to render. This is far more reliable than waiting on a
     //    CSS class — the ARIA role="row" is stable across id4me UI updates, the class isn't.
-    //    Also resolve on "No results found" so a 0-result search returns instantly.
-    await page.waitForFunction(
-        () => {
-            if (document.querySelectorAll('div[role="row"]').length > 1) return true;
-            const heads = document.querySelectorAll('[role="heading"], h1, h2, h3, h4, h5, h6');
-            for (const h of heads) if (/no results found/i.test(h.textContent || '')) return true;
-            return false;
-        },
-        { timeout: 8000 }
-    ).catch(() => {});
+    //    Also resolve on the empty-state message so a 0-result search returns instantly.
+    const gridState = await waitForGridOrEmpty(page, 8000);
+    if (gridState.empty && gridState.rows <= 1) return { success: true, data: [] };
 
     // Resolve the scrollable container by STRUCTURE, not class name — future-proof against
     // id4me renaming/wrapping the grid (e.g. the v1.6.1 update). We try the known MUI/AG
@@ -1413,8 +1482,10 @@ async function addressScan(page, address, postcode, ownerName, suburb, coOwners 
         await addFirstChip(page, suburbDisplay ? `${address} ${suburbDisplay}` : address);
 
         updateStatus(`Waiting for ID4Me to load ${address}...`, true);
-        // 🚀 SPEED OPTIMIZATION: State-based wait instead of hardcoded 1.5s
-        await page.waitForSelector('.MuiDataGrid-row, div[role="row"]', { state: 'attached', timeout: isFastMode() ? 3000 : 5000 }).catch(() => {});
+        // 🚀 SPEED OPTIMIZATION: State-based wait instead of hardcoded 1.5s.
+        // Also resolves on the empty-state message so a 0-result address doesn't
+        // sit through the full timeout waiting for rows that never arrive.
+        await waitForGridOrEmpty(page, isFastMode() ? 3000 : 5000);
         await page.waitForTimeout(isFastMode() ? 100 : 300); // Tiny buffer for DOM to settle
 
         // 📜 NEW ROBUST SCROLL: Harvest all names using Playwright's native tools
@@ -1499,23 +1570,19 @@ async function searchId4meByName(page, fullName) {
     // We must wait for the new name search to actually execute before reading rows —
     // otherwise getRows reads the leftover history list (the identical "151 results" bug).
     // The results view has an "of N results" pagination counter; the history view does NOT.
-    // Waiting for that counter (OR a "No results found" message) confirms the search executed —
+    // Waiting for that counter (OR an empty-state message) confirms the search executed —
     // resolving on the empty-results message keeps a 0-result name from burning the full timeout.
-    await Promise.race([
-        page.getByText(/of \d+ results?/i).first().waitFor({ state: 'visible', timeout: isFastMode() ? 5000 : 8000 }),
-        page.getByRole('heading', { name: 'No results found' }).waitFor({ state: 'visible', timeout: isFastMode() ? 5000 : 8000 }),
-    ]).catch(() => {});
+    const searchState = await waitForGridOrEmpty(page, isFastMode() ? 5000 : 8000, { requireCounter: true });
     await page.waitForTimeout(isFastMode() ? 200 : 400);
 
-    // Read the pagination counter (e.g. "1–13 of 13 results") before scrolling all rows.
+    // Empty state confirmed — no rows to read, return immediately.
+    if (searchState.empty && searchState.rows <= 1) return { success: true, data: [] };
+
+    // Use the pagination counter (e.g. "1–13 of 13 results") before scrolling all rows.
     // If the total exceeds MAX_RESULT_COUNT, bail immediately without calling getRows.
-    const paginationText = await page.getByText(/of \d+ results?/i).first().innerText({ timeout: 2000 }).catch(() => "");
-    const countMatch = paginationText.match(/of (\d+) results?/i);
-    if (countMatch) {
-        const totalCount = parseInt(countMatch[1], 10);
-        if (totalCount > MAX_RESULT_COUNT) {
-            return { success: true, data: [], tooMany: true, totalCount };
-        }
+    const totalCount = searchState.total !== null ? searchState.total : (await readGridState(page)).total;
+    if (totalCount !== null && totalCount > MAX_RESULT_COUNT) {
+        return { success: true, data: [], tooMany: true, totalCount };
     }
 
     const rowsResult = await getRows(page);
@@ -1598,19 +1665,12 @@ async function addressScanGrouped(page, address, postcode, ownerNames, suburb, c
         await addFirstChip(page, suburbDisplay ? `${address} ${suburbDisplay}` : address);
 
         updateStatus(`Waiting for ID4Me to load ${address}...`, true);
-        // Wait for grid rows to render OR a "No results found" message. Resolving on the
+        // Wait for grid rows to render OR an empty-state message. Resolving on the
         // empty-results message means a 0-result address returns instantly instead of
         // burning the full timeout waiting for rows that will never appear.
-        const gridReady = await page.waitForFunction(
-            () => {
-                if (document.querySelectorAll('div[role="row"]').length > 1) return true;
-                const heads = document.querySelectorAll('[role="heading"], h1, h2, h3, h4, h5, h6');
-                for (const h of heads) if (/no results found/i.test(h.textContent || '')) return true;
-                return false;
-            },
-            { timeout: isFastMode() ? 8000 : 12000 }
-        ).then(() => true).catch(() => false);
-        if (!gridReady) addActivity(`[Diag] Grid did not appear within timeout for "${address}" — proceeding anyway.`, 'warning');
+        const addressState = await waitForGridOrEmpty(page, isFastMode() ? 8000 : 12000);
+        if (!addressState.ready) addActivity(`[Diag] Grid did not appear within timeout for "${address}" — proceeding anyway.`, 'warning');
+        else if (addressState.empty && addressState.rows <= 1) addActivity(`[Diag] "${address}" — ID4Me returned no results.`, 'info');
         await page.waitForTimeout(isFastMode() ? 100 : 300);
 
         updateStatus(`Scraping all residents for ${address}...`, true);
