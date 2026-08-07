@@ -39,6 +39,39 @@
     box-shadow: 0 4px 12px rgba(59, 130, 246, 0.3); /* Soft blue glow */
 }
 
+/* 🏷️ Sidebar header — app icon sitting beside the name + running version */
+#toolbar-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 32px;
+    flex: 0 0 auto;
+}
+/* The header owns the spacing now, so the logo drops its own bottom margin. */
+#toolbar-header #toolbar-logo {
+    margin-bottom: 0;
+    flex: 0 0 auto;
+}
+#toolbar-version {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    line-height: 1.35;
+    min-width: 0;
+}
+#toolbar-version-name {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-light);
+    white-space: nowrap;
+}
+#toolbar-version-number {
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--text-muted);
+    white-space: nowrap;
+}
+
 /* 🔑 Main Menu Item */
 #toolbar-login-section {
     display: flex;
@@ -146,6 +179,14 @@ body.sidebar-collapsed {
 #main-toolbar.collapsed #toolbar-help-label,
 #main-toolbar.collapsed #toolbar-sign-out-label {
     display: none; /* Hide text */
+}
+
+/* Collapsed rail is icon-only — drop the name/version and centre the logo. */
+#main-toolbar.collapsed #toolbar-version {
+    display: none;
+}
+#main-toolbar.collapsed #toolbar-header {
+    justify-content: center;
 }
 
 #main-toolbar.collapsed #toolbar-login-section,

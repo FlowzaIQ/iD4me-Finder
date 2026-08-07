@@ -113,6 +113,10 @@ let recentProcessingTimes = [];
 let emaProcessingMs = null;
 const ETA_EMA_ALPHA = 0.05;  // Lower = smoother, less reactive to single outliers
 const ETA_WARMUP_SAMPLES = 5;
+// How many addresses may fail BACK-TO-BACK before we treat it as a real outage and stop.
+// One-off failures are normal (ID4Me re-renders mid-scrape, a request drops); a genuine
+// rate limit or outage fails every row in a row. Only the second pattern should end a run.
+const MAX_CONSECUTIVE_FAILURES = 5;
 let runStartTime = null;      // Wall-clock anchor for blended ETA
 let isGlobalPaused = false;     
 let isGlobalStopped = false; 
@@ -1229,7 +1233,9 @@ async function getRows(page, retryCount = 0) {
       await randomDelay(isFastMode() ? 500 : 2000, isFastMode() ? 500 : 3000);
       return await getRows(page, retryCount + 1);
     }
-    return { success: false, data: [], error: "SERVICE_FAILURE" };
+    // Carry the real reason up. Without it every downstream failure looked identical,
+    // which is why these stops were impossible to explain from the activity log.
+    return { success: false, data: [], error: "SERVICE_FAILURE", errorMessage: error.message || "" };
   }
 }
 
@@ -1682,6 +1688,7 @@ async function addressScanGrouped(page, address, postcode, ownerNames, suburb, c
         }
 
         if (!rowsResult.success) {
+            addActivity(`[Diag] getRows failed for "${address}": ${rowsResult.errorMessage || 'unknown error'}`, 'warning');
             // getRows failed — possibly still in wrong search mode on first attempt.
             // Reload, re-ensure normal search, and retry once before giving up.
             if (retryCount < 1) {
@@ -2072,6 +2079,10 @@ ipcMain.on('save-crm-settings', (event, settings) => {
         console.error("Failed to save CRM file");
     }
 });
+
+// Sidebar version badge. app.getVersion() reads the packaged build's version, so it
+// stays correct after an auto-update without anyone touching the UI.
+ipcMain.handle('get-app-version', () => app.getVersion());
 
 ipcMain.handle('get-credentials', () => {
     try {
@@ -2566,6 +2577,25 @@ ipcMain.on('start-scrape', async (event, speedMode, isStrictHomeownersOnly, outp
         }
     };
 
+    // Tracks BACK-TO-BACK address failures. Reset to 0 by any address that succeeds,
+    // so isolated blips never accumulate toward the abort threshold.
+    let consecutiveFailures = 0;
+
+    // Logs a failed address as an error row and keeps the run moving. Mirrors the
+    // SCRIPT_ERROR row written by the per-row catch below so failures stay visible
+    // in the output instead of silently vanishing.
+    const recordAddressFailure = (i, ownerName, address, lastSoldDate, reason) => {
+        stats.processed++;
+        stats.errors++;
+        const errorRow = [ownerName, address, "SERVICE_FAILURE", reason, "N/A", "N/A", "N/A", "N/A", "N/A", lastSoldDate || "N/A"];
+        if (absenteeEnabled) errorRow.push("");
+        writeRow(errorRow);
+        if (liveSheets) sheetsHighWaterMark = i;
+        sendStats();
+        updateProgress();
+        checkpointSave(i, OUTPUT_FILE);
+    };
+
       // 6. MAIN PROCESSING LOOP
     for (let i = startIndex; i < stats.total; i++) {
       
@@ -2599,24 +2629,51 @@ ipcMain.on('start-scrape', async (event, speedMode, isStrictHomeownersOnly, outp
         const coOwners = ownersByAddress.get(addressKey) || [];
         let groupedResults = groupedResultsByAddress.get(addressKey);
 
+        let lookupFailed = false;
+
         if (!groupedResults) {
             const ownerNames = Array.from(new Set(coOwners.filter(o => !isEmpty(o)).map(o => o.trim())));
             groupedResults = await addressScanGrouped(page, address, postcode, ownerNames, suburb, coOwners);
+
             if (!groupedResults) {
-                // addressScanGrouped already retried internally — this is a genuine failure.
-                addActivity(`Rate limit hit scanning ${ownerName}. Pausing app.`, 'danger');
-                stoppedEarly = true; break;
+                lookupFailed = true;
+            } else if ([...groupedResults.values()].some(r => r && (r.serviceError || r.status === "SERVICE_FAILURE"))) {
+                // Never cache a failed lookup — a cached failure would poison every
+                // remaining co-owner at this address without retrying even once.
+                lookupFailed = true;
+            } else {
+                groupedResultsByAddress.set(addressKey, groupedResults);
             }
-            groupedResultsByAddress.set(addressKey, groupedResults);
         }
+
+        if (lookupFailed) {
+            consecutiveFailures++;
+
+            if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+                addActivity(`Stopped: ${consecutiveFailures} addresses failed back-to-back — ID4Me looks rate limited or down.`, 'danger');
+                updateStatus("Stopped - repeated lookup failures", false);
+                checkpointSave(i - 1, OUTPUT_FILE);
+                stoppedEarly = true;
+                break;
+            }
+
+            addActivity(`Lookup failed for ${address} (${consecutiveFailures}/${MAX_CONSECUTIVE_FAILURES} in a row) — skipping this record and continuing.`, 'warning');
+            recordAddressFailure(i, ownerName, address, lastSoldDate, "Address lookup failed after retries");
+
+            // Give the next record a clean page to start from.
+            try {
+                if (!page.isClosed()) {
+                    await page.reload({ waitUntil: 'load', timeout: 30000 });
+                    await waitForPageReady(page);
+                }
+            } catch (e) { /* next row's ensureLoggedIn will recover */ }
+            continue;
+        }
+
+        // This address worked — any earlier blips were isolated, so clear the streak.
+        consecutiveFailures = 0;
 
         let result = groupedResults.get(normalizeLoose(ownerName)) || { status: "NO_MATCH", people: [] };
-
-        if (result.serviceError || result.status === "SERVICE_FAILURE") {
-            // SERVICE_FAILURE after all retries — likely a genuine rate limit or outage.
-            addActivity(`Rate limit hit scanning ${ownerName}. Pausing app.`, 'danger');
-            stoppedEarly = true; break;
-        }
 
         let absenteeResolved = null;
         const hasHomeowner = Array.isArray(result.people) && result.people.some(p => p.Status === "HOMEOWNER");
