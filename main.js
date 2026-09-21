@@ -925,8 +925,26 @@ function detectGridState({ patterns }) {
     if (!empty && patterns.some(p => txt.includes(p))) empty = true;
 
     if (total === null) {
-      const m = raw.match(/of (\d+) results?/i);
-      if (m) total = parseInt(m[1], 10);
+      // Old UI: "1–13 of 13 results". New UI (2026-09): "35 matches for your search —".
+      // The number may sit in its own <strong>/<span>, so also check the parent's text.
+      // Join the parent's text nodes WITH spaces — textContent glues siblings together, so the
+      // "Rows per page: 50" selector next to "7 matches" read as "507 matches".
+      const parse = (s) => {
+        const m = s.match(/\bof ([\d,]+)\+? results?/i) || s.match(/(?:^|[^\d,])([\d,]+)\+? match(?:es)? for your search/i);
+        return m ? parseInt(m[1].replace(/,/g, ''), 10) : null;
+      };
+      const spacedText = (root) => {
+        const parts = [];
+        const w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+        for (let n = w.nextNode(); n; n = w.nextNode()) parts.push(n.nodeValue || '');
+        return parts.join(' ').replace(/\s+/g, ' ').trim();
+      };
+      total = parse(raw);
+      for (const holder of [el, el.parentElement]) {
+        if (total !== null || !holder) break;
+        const htxt = spacedText(holder);
+        if (htxt.length <= 300) total = parse(htxt);
+      }
     }
     if (empty && total !== null) break;
   }
@@ -1985,10 +2003,20 @@ function createWindow() {
   mainWindow = new BrowserWindow({
     width: 900, height: 700,
     icon: path.join(__dirname, 'assets', 'icon.ico'), //
-    webPreferences: { nodeIntegration: true, contextIsolation: false }
+    // backgroundThrottling: false keeps this window's timers running at full speed when it
+    // is minimised or hidden behind other windows. Without it Chromium slows background
+    // timers to ~1/sec, which stalls the run loop's waits the moment the user minimises.
+    webPreferences: { nodeIntegration: true, contextIsolation: false, backgroundThrottling: false }
   });
   mainWindow.loadFile('index.html');
 }
+
+// Same throttling switches for Electron's own Chromium, applied before the app starts.
+// These must be set before app.whenReady() or Chromium has already read its config.
+app.commandLine.appendSwitch('disable-background-timer-throttling');
+app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
+app.commandLine.appendSwitch('disable-renderer-backgrounding');
+app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion');
 
 app.whenReady().then(() => {
   createWindow();
@@ -2439,11 +2467,23 @@ ipcMain.on('start-scrape', async (event, speedMode, isStrictHomeownersOnly, outp
 
     // 5. Launch Browser
     updateStatus("Launching browser...", true);
+    // Keep the automation browser running at full speed while minimised or covered.
+    // Chromium throttles background timers/rendering by default, which is why a minimised
+    // run appeared to pause: every wait stretched out and scrolls stopped rendering rows.
+    const launchOpts = {
+        headless: !!headlessEnabled,
+        args: [
+            '--disable-background-timer-throttling',
+            '--disable-backgrounding-occluded-windows',
+            '--disable-renderer-backgrounding',
+            '--disable-features=CalculateNativeWinOcclusion',
+        ],
+    };
     try {
-        browser = await chromium.launch({ headless: !!headlessEnabled, channel: 'chrome' });
+        browser = await chromium.launch({ ...launchOpts, channel: 'chrome' });
     } catch {
         try {
-            browser = await chromium.launch({ headless: !!headlessEnabled, channel: 'msedge' });
+            browser = await chromium.launch({ ...launchOpts, channel: 'msedge' });
         } catch {
             throw new Error('No compatible browser found. Please install Google Chrome or Microsoft Edge to use this app.');
         }
