@@ -507,6 +507,25 @@ function splitPriceFinderOwners(rawOwner) {
   return [o1, o2, o3];
 }
 
+// Column names that identify a header row for each supported export format.
+const HEADER_MARKER_CELLS = ["imported_address", "current owners"];
+
+// Some exports (e.g. PriceFinder "export to excel" sheets that have been appended to or
+// re-saved) carry their header row partway down the file instead of on line 1, with data
+// rows both above and below it. Format detection and both parsers assume rows[0] is the
+// header, so without this the whole file is treated as headerless and the owner columns
+// are read from the wrong positions (suburb/street number end up searched as names).
+// Move the header to the top and keep every data row, dropping any repeated header rows.
+function normalizeSheetRows(rows) {
+  if (!Array.isArray(rows) || rows.length === 0) return rows;
+  const isHeaderRow = (r) =>
+    Array.isArray(r) && r.some(c => HEADER_MARKER_CELLS.includes(String(c || "").toLowerCase().trim()));
+  if (isHeaderRow(rows[0])) return rows;
+  const headerIdx = rows.findIndex(isHeaderRow);
+  if (headerIdx < 0) return rows;
+  return [rows[headerIdx], ...rows.filter((r, i) => i !== headerIdx && !isHeaderRow(r))];
+}
+
 function parsePriceFinderCSV(rows) {
   // Find header row indices
   const header = rows[0].map(h => h.toLowerCase().trim());
@@ -2416,7 +2435,7 @@ ipcMain.on('start-scrape', async (event, speedMode, isStrictHomeownersOnly, outp
     }
 
     // 4. Read input spreadsheet (.csv, .xlsx, .xls)
-    let rawRows = readSheetRows(INPUT_FILE);
+    let rawRows = normalizeSheetRows(readSheetRows(INPUT_FILE));
 
     // Detect CSV format by checking header row
     const headerCells = rawRows.length > 0 ? rawRows[0].map(h => h.toLowerCase().trim()) : [];
